@@ -62,6 +62,7 @@ class StrikeMode(str, Enum):
     MANUAL = "manual"
     HEURISTIC = "heuristic"
     RL = "rl"
+    PRETRAINED = "pretrained"
 
 
 class HammerRequest(BaseModel):
@@ -193,6 +194,42 @@ class GoldFoilService:
             self.session_id = f"session-{int(time.time())}"
             self.strike_history = []
             self.alert_history = []
+            self.pretrain_running = False
+            self.pretrain_report = None
+    
+    def trigger_pretrain_async(
+        self,
+        num_demos: int = 20,
+        steps_per_demo: int = 40,
+        pretrain_epochs: int = 40,
+    ):
+        """在后台线程执行演示数据生成 + Behavior Cloning 预训练"""
+        if self.pretrain_running:
+            return {"running": True, "message": "预训练已在进行中"}
+        if self.rl_session and self.rl_session.policy.is_pretrained:
+            return {"running": False, "message": "已完成预训练", "report": self.pretrain_report}
+        
+        self.pretrain_running = True
+        
+        def worker():
+            try:
+                print("[RL] 开始后台预训练: 生成演示 + Behavior Cloning")
+                report = self.rl_session.generate_and_pretrain(
+                    num_demos=num_demos,
+                    steps_per_demo=steps_per_demo,
+                    pretrain_epochs=pretrain_epochs,
+                    verbose=True,
+                )
+                self.pretrain_report = report
+                print(f"[RL] 预训练完成! 位置准确率={report['behavior_cloning'].get('final_position_accuracy', 0):.2%}")
+            except Exception as e:
+                print(f"[RL] 预训练异常: {e}")
+            finally:
+                self.pretrain_running = False
+        
+        t = threading.Thread(target=worker, daemon=True)
+        t.start()
+        return {"running": True, "message": "预训练已启动，后台执行中"}
     
     def apply_strike(self, hammer: HammerParameters) -> dict:
         """执行锤击并持久化数据"""
@@ -503,15 +540,25 @@ async def apply_hammer_strike(req: HammerRequest):
     return result
 
 
+def _resolve_action_type(mode: StrikeMode) -> ActionType:
+    if mode == StrikeMode.PRETRAINED:
+        if service.rl_session and not service.rl_session.policy.is_pretrained:
+            try:
+                service.trigger_pretrain_async()
+            except Exception:
+                pass
+        return ActionType.PRETRAINED
+    if mode == StrikeMode.RL:
+        return ActionType.Q_LEARNING
+    return ActionType.HEURISTIC
+
+
 @app.post("/api/strike/auto")
 async def apply_auto_strike(
     mode: StrikeMode = Query(StrikeMode.HEURISTIC, description="锤击模式"),
 ):
-    """自动锤击一步（启发式或强化学习）"""
-    action_type = ActionType.HEURISTIC
-    if mode == StrikeMode.RL:
-        action_type = ActionType.Q_LEARNING
-    
+    """自动锤击一步（启发式/强化学习/预训练策略）"""
+    action_type = _resolve_action_type(mode)
     result = service.apply_rl_step(mode=action_type)
     
     if "alert" in result:
@@ -581,7 +628,7 @@ async def start_auto_simulation(
         raise HTTPException(status_code=400, detail="自动仿真已在运行")
     
     service.auto_sim_running = True
-    action_type = ActionType.HEURISTIC if mode == StrikeMode.HEURISTIC else ActionType.Q_LEARNING
+    action_type = _resolve_action_type(mode)
     
     def sim_loop():
         count = 0
@@ -657,6 +704,7 @@ async def get_stats_summary():
             "mean_um": metrics["mean_thickness_um"],
             "std_um": metrics["std_thickness_um"],
             "cv": metrics["coefficient_of_variation"],
+            "grid_size": metrics.get("grid_size", service.config.grid_size),
         },
         "uniformity": {
             "within_5pct": metrics["uniformity_within_5pct"],
@@ -667,7 +715,34 @@ async def get_stats_summary():
         "plastic_strain": state["plastic_strain"],
         "alerts_count": len(service.alert_history),
         "in_progress": state["auto_sim_running"],
+        "pretrain": {
+            "running": getattr(service, "pretrain_running", False),
+            "report": getattr(service, "pretrain_report", None),
+            "is_pretrained": service.rl_session.policy.is_pretrained if service.rl_session else False,
+        },
     }
+
+
+@app.post("/api/rl/pretrain")
+async def trigger_pretrain(
+    num_demos: int = Query(20, ge=5, le=100, description="演示集数量"),
+    steps_per_demo: int = Query(40, ge=10, le=100, description="每集步数"),
+    pretrain_epochs: int = Query(50, ge=10, le=200, description="训练轮数"),
+):
+    """启动强化学习预训练（演示数据生成 + Behavior Cloning）"""
+    result = service.trigger_pretrain_async(
+        num_demos=num_demos,
+        steps_per_demo=steps_per_demo,
+        pretrain_epochs=pretrain_epochs,
+    )
+    return result
+
+
+@app.get("/api/mesh/quality")
+async def get_mesh_quality():
+    """自适应网格重划 - 质量诊断报告"""
+    with service._lock:
+        return service.physics.get_mesh_quality_report()
 
 
 @app.websocket("/ws")

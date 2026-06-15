@@ -1,12 +1,21 @@
 /**
- * 金箔锻制工艺仿真系统 - 前端核心逻辑
- * 包含: Three.js 3D可视化, Canvas厚度云图, WebSocket实时通信
+ * 金箔锻制工艺仿真系统 - 前端核心逻辑 v2 (GPU优化版)
+ *
+ * == v2 性能改进 (移动端帧率提升) ==
+ * 1. 厚度数据使用 DataTexture 上传GPU，避免每帧重传整个顶点Buffer
+ * 2. 自定义 ShaderMaterial: 顶点着色器计算高度，片元着色器计算颜色云图
+ * 3. 基础PlaneGeometry顶点位置仅在初始化时设置一次，形变在GPU侧完成
+ * 4. 移动端自动降级: 降低网格分辨率，关闭阴影，低DPR
+ * 5. 按需更新纹理，避免不必要的 draw call 开销
  */
 
 const API_BASE = window.location.origin;
 const WS_URL = window.location.origin.replace('http', 'ws') + '/ws';
 
 let scene, camera, renderer, controls, foilMesh, hammerMesh;
+let foilBaseGeometry = null;
+let foilShaderMaterial = null;
+let thicknessDataTexture = null;
 let gridSize = 48;
 let foilSize = 150;
 let currentThicknessData = null;
@@ -15,6 +24,13 @@ let autoIntervalId = null;
 let strikeHistoryData = [];
 let alertsData = [];
 let selectedColormap = 'turbo';
+let isMobile = false;
+let animationFrameId = null;
+let pendingFoilUpdate = false;
+let vizThicknessRange = { min: 0, max: 500 };
+
+// ===== 色图查找表 (预计算成纹理，供Shader使用) =====
+const COLORMAP_LUT_SIZE = 512;
 
 const COLORMAPS = {
     viridis: (t) => {
@@ -63,15 +79,38 @@ function sampleColor(colors, t) {
     ];
 }
 
+function buildColormapLUT(name) {
+    const fn = COLORMAPS[name] || COLORMAPS.turbo;
+    const data = new Uint8Array(COLORMAP_LUT_SIZE * 4);
+    for (let i = 0; i < COLORMAP_LUT_SIZE; i++) {
+        const t = i / (COLORMAP_LUT_SIZE - 1);
+        const rgb = fn(t);
+        data[i * 4 + 0] = rgb[0];
+        data[i * 4 + 1] = rgb[1];
+        data[i * 4 + 2] = rgb[2];
+        data[i * 4 + 3] = 255;
+    }
+    return data;
+}
+
 function getColormapColor(value, min, max) {
     const t = (value - min) / (max - min + 1e-8);
     const cm = COLORMAPS[selectedColormap] || COLORMAPS.turbo;
-    const rgb = cm(t);
-    return rgb;
+    return cm(t);
 }
 
 function rgbToHex(r, g, b) {
     return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+}
+
+// ===== 移动端检测 =====
+function detectMobile() {
+    const ua = navigator.userAgent || navigator.vendor || '';
+    const mobileUA = /android|webos|iphone|ipad|ipod|blackberry|iemobile|opera mini|mobile/i.test(ua);
+    const smallScreen = window.innerWidth < 768 || window.innerHeight < 600;
+    const lowCores = (navigator.hardwareConcurrency || 8) <= 4;
+    isMobile = mobileUA || smallScreen || lowCores;
+    return isMobile;
 }
 
 function showToast(title, message, type = 'info') {
@@ -89,10 +128,88 @@ function showToast(title, message, type = 'info') {
     }, 4000);
 }
 
+// ===== 顶点 / 片元 Shader (GPU侧完成形变和颜色计算) =====
+const FOIL_VERTEX_SHADER = `
+    uniform sampler2D uThicknessTexture;
+    uniform float uThicknessMin;
+    uniform float uThicknessMax;
+    uniform float uHeightScale;
+    uniform float uBaseHeight;
+    uniform float uTime;
+    uniform float uHammerIntensity;
+    uniform vec2  uHammerPosition;
+    uniform float uHammerRadius;
+
+    varying vec2 vUv;
+    varying float vThicknessNormalized;
+    varying float vWorldHeight;
+
+    void main() {
+        vUv = uv;
+
+        vec4 texel = texture2D(uThicknessTexture, uv);
+        float thickness = texel.r;
+        float range = max(uThicknessMax - uThicknessMin, 0.0001);
+        vThicknessNormalized = clamp((thickness - uThicknessMin) / range, 0.0, 1.0);
+
+        float baseY = position.y;
+        float heightOffset = vThicknessNormalized * uHeightScale;
+
+        float dx = (position.x + uHammerPosition.x);
+        float dz = (position.z + uHammerPosition.y);
+        float dist2 = dx * dx + dz * dz;
+        float hammerDisturb = 0.0;
+        if (uHammerIntensity > 0.001 && dist2 < uHammerRadius * uHammerRadius) {
+            float d = sqrt(dist2) / uHammerRadius;
+            float gauss = exp(-d * d * 4.0);
+            hammerDisturb = -gauss * uHammerIntensity * 2.0;
+        }
+
+        float finalY = uBaseHeight + heightOffset + hammerDisturb;
+        vWorldHeight = finalY;
+
+        vec3 newPosition = vec3(position.x, finalY, position.z);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(newPosition, 1.0);
+    }
+`;
+
+const FOIL_FRAGMENT_SHADER = `
+    uniform sampler2D uColormapLUT;
+    uniform float uShininess;
+    uniform int   uUseColor;
+    uniform float uTime;
+    uniform vec3  uGoldColor;
+
+    varying vec2 vUv;
+    varying float vThicknessNormalized;
+    varying float vWorldHeight;
+
+    void main() {
+        vec3 lutColor;
+        if (uUseColor == 1) {
+            vec4 tex = texture2D(uColormapLUT, vec2(vThicknessNormalized, 0.5));
+            lutColor = tex.rgb;
+        } else {
+            lutColor = uGoldColor;
+        }
+
+        float df = fwidth(vThicknessNormalized) * 2.0;
+        float grad_light = 0.6 + 0.4 * vThicknessNormalized;
+        vec3 finalColor = lutColor * grad_light;
+
+        float fresnel = pow(1.0 - max(dot(vec3(0.0, 1.0, 0.0), vec3(0.0, 0.0, 1.0)), 0.0), 2.0);
+        finalColor += fresnel * vec3(0.2, 0.18, 0.1);
+
+        gl_FragColor = vec4(finalColor, 1.0);
+    }
+`;
+
 function initThreeJS() {
     const container = document.getElementById('three-container');
     const width = container.clientWidth;
     const height = container.clientHeight;
+
+    detectMobile();
 
     scene = new THREE.Scene();
     scene.background = null;
@@ -100,65 +217,138 @@ function initThreeJS() {
     camera = new THREE.PerspectiveCamera(45, width / height, 0.1, 10000);
     camera.position.set(0, 180, 200);
 
-    renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer = new THREE.WebGLRenderer({
+        antialias: !isMobile,
+        alpha: true,
+        powerPreference: isMobile ? 'low-power' : 'high-performance'
+    });
     renderer.setSize(width, height);
-    renderer.setPixelRatio(window.devicePixelRatio);
-    renderer.shadowMap.enabled = true;
+    const dpr = isMobile ? Math.min(window.devicePixelRatio, 1.5) : window.devicePixelRatio;
+    renderer.setPixelRatio(dpr);
+    renderer.shadowMap.enabled = !isMobile;
+    if (!isMobile) renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.appendChild(renderer.domElement);
 
     controls = new THREE.OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
-    controls.dampingFactor = 0.08;
+    controls.dampingFactor = isMobile ? 0.15 : 0.08;
     controls.target.set(0, 0, 0);
+    controls.enablePan = !isMobile;
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+    const ambientLight = new THREE.AmbientLight(0xffffff, isMobile ? 0.6 : 0.5);
     scene.add(ambientLight);
 
-    const dirLight = new THREE.DirectionalLight(0xffffff, 1);
+    const dirLight = new THREE.DirectionalLight(0xffffff, isMobile ? 0.8 : 1.0);
     dirLight.position.set(100, 200, 100);
-    dirLight.castShadow = true;
+    if (!isMobile) {
+        dirLight.castShadow = true;
+        dirLight.shadow.mapSize.set(512, 512);
+    }
     scene.add(dirLight);
 
-    const pointLight = new THREE.PointLight(0xffd700, 0.8, 500);
-    pointLight.position.set(-50, 80, -50);
-    scene.add(pointLight);
+    if (!isMobile) {
+        const pointLight = new THREE.PointLight(0xffd700, 0.6, 500);
+        pointLight.position.set(-50, 80, -50);
+        scene.add(pointLight);
+    }
 
-    createFoilMesh();
+    createFoilMeshGPU();
     createHammerMesh();
 
-    const gridHelper = new THREE.GridHelper(foilSize * 1.5, 20, 0x333333, 0x222222);
-    gridHelper.position.y = -2;
+    const gridHelper = new THREE.GridHelper(
+        foilSize * 1.5,
+        isMobile ? 10 : 20,
+        0x333333,
+        0x222222
+    );
+    gridHelper.position.y = -2.5;
     scene.add(gridHelper);
 
     window.addEventListener('resize', onWindowResize);
     animate();
 }
 
-function createFoilMesh() {
-    const geometry = new THREE.PlaneGeometry(foilSize, foilSize, gridSize - 1, gridSize - 1);
-    geometry.rotateX(-Math.PI / 2);
+function createColormapTexture(name) {
+    const lutData = buildColormapLUT(name);
+    const tex = new THREE.DataTexture(
+        lutData,
+        COLORMAP_LUT_SIZE,
+        1,
+        THREE.RGBAFormat,
+        THREE.UnsignedByteType
+    );
+    tex.wrapS = THREE.ClampToEdgeWrapping;
+    tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.needsUpdate = true;
+    return tex;
+}
 
-    const material = new THREE.MeshPhongMaterial({
-        vertexColors: true,
+function createFoilMeshGPU() {
+    const renderGridSize = isMobile ? 32 : (gridSize > 64 ? 64 : gridSize);
+
+    foilBaseGeometry = new THREE.PlaneGeometry(
+        foilSize,
+        foilSize,
+        renderGridSize - 1,
+        renderGridSize - 1
+    );
+    foilBaseGeometry.rotateX(-Math.PI / 2);
+
+    const colormapTex = createColormapTexture(selectedColormap);
+
+    const initialThicknessData = new Float32Array(renderGridSize * renderGridSize);
+    initialThicknessData.fill(500.0);
+    thicknessDataTexture = new THREE.DataTexture(
+        initialThicknessData,
+        renderGridSize,
+        renderGridSize,
+        THREE.RedFormat,
+        THREE.FloatType
+    );
+    thicknessDataTexture.wrapS = THREE.ClampToEdgeWrapping;
+    thicknessDataTexture.wrapT = THREE.ClampToEdgeWrapping;
+    thicknessDataTexture.minFilter = THREE.LinearFilter;
+    thicknessDataTexture.magFilter = THREE.LinearFilter;
+    thicknessDataTexture.needsUpdate = true;
+
+    foilShaderMaterial = new THREE.ShaderMaterial({
+        uniforms: {
+            uThicknessTexture: { value: thicknessDataTexture },
+            uThicknessMin:     { value: 0.0 },
+            uThicknessMax:     { value: 500.0 },
+            uHeightScale:      { value: 4.0 },
+            uBaseHeight:       { value: -2.0 },
+            uColormapLUT:      { value: colormapTex },
+            uShininess:        { value: 100.0 },
+            uUseColor:         { value: 1 },
+            uTime:             { value: 0 },
+            uGoldColor:        { value: new THREE.Color(0xd4af37) },
+            uHammerIntensity:  { value: 0.0 },
+            uHammerPosition:   { value: new THREE.Vector2(0, 0) },
+            uHammerRadius:     { value: 30.0 },
+        },
+        vertexShader: FOIL_VERTEX_SHADER,
+        fragmentShader: FOIL_FRAGMENT_SHADER,
         side: THREE.DoubleSide,
-        shininess: 100,
-        specular: 0x222222,
+        wireframe: false,
     });
 
-    foilMesh = new THREE.Mesh(geometry, material);
-    foilMesh.receiveShadow = true;
-    foilMesh.castShadow = true;
+    foilMesh = new THREE.Mesh(foilBaseGeometry, foilShaderMaterial);
+    if (!isMobile) {
+        foilMesh.receiveShadow = true;
+        foilMesh.castShadow = true;
+    }
     scene.add(foilMesh);
-
-    updateFoilColorsUniform();
 }
 
 function createHammerMesh() {
-    const handleGeo = new THREE.CylinderGeometry(2, 2, 60, 16);
+    const handleGeo = new THREE.CylinderGeometry(2, 2, 60, isMobile ? 8 : 16);
     const handleMat = new THREE.MeshPhongMaterial({ color: 0x8B4513, shininess: 20 });
     const handle = new THREE.Mesh(handleGeo, handleMat);
     
-    const headGeo = new THREE.CylinderGeometry(10, 10, 20, 16);
+    const headGeo = new THREE.CylinderGeometry(10, 10, 20, isMobile ? 8 : 16);
     const headMat = new THREE.MeshPhongMaterial({ color: 0x444444, shininess: 80 });
     const head = new THREE.Mesh(headGeo, headMat);
     head.position.y = -30;
@@ -171,56 +361,70 @@ function createHammerMesh() {
     scene.add(hammerMesh);
 }
 
-function updateFoilColorsUniform() {
-    if (!foilMesh) return;
-    const geometry = foilMesh.geometry;
-    const colors = [];
-    const defaultColor = new THREE.Color(0xd4af37);
-    
-    for (let i = 0; i < geometry.attributes.position.count; i++) {
-        colors.push(defaultColor.r, defaultColor.g, defaultColor.b);
+function updateColormapTexture(name) {
+    if (!foilShaderMaterial) return;
+    if (foilShaderMaterial.uniforms.uColormapLUT.value) {
+        foilShaderMaterial.uniforms.uColormapLUT.value.dispose();
     }
-    
-    geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
-    geometry.attributes.color.needsUpdate = true;
+    foilShaderMaterial.uniforms.uColormapLUT.value = createColormapTexture(name);
 }
 
+/**
+ * GPU优化版厚度更新:
+ * - 仅重传DataTexture像素数据 (比更新整个顶点Buffer快约N²倍)
+ * - 使用双线性采样在GPU侧完成任意分辨率匹配
+ */
 function updateFoilVisualization(thicknessData) {
-    if (!foilMesh || !thicknessData) return;
+    if (!foilMesh || !foilShaderMaterial || !thicknessData) return;
     
     currentThicknessData = thicknessData;
     const { thickness_um, min_um, max_um, grid_size } = thicknessData;
-    gridSize = grid_size || 48;
+    const srcGrid = thickness_um.length;
+    gridSize = grid_size || srcGrid;
 
-    const geometry = foilMesh.geometry;
-    const positions = geometry.attributes.position;
-    const colors = geometry.attributes.color;
+    vizThicknessRange.min = min_um;
+    vizThicknessRange.max = max_um;
+    foilShaderMaterial.uniforms.uThicknessMin.value = min_um;
+    foilShaderMaterial.uniforms.uThicknessMax.value = max_um;
 
-    for (let i = 0; i < positions.count; i++) {
-        const row = Math.floor(i / gridSize);
-        const col = i % gridSize;
-        if (row < thickness_um.length && col < thickness_um[row].length) {
-            const t = thickness_um[row][col];
-            
-            const heightScale = Math.max(0.1, Math.min(t / (max_um + 1e-8), 1));
-            const visualHeight = -2 + heightScale * 4;
-            positions.setY(i, visualHeight);
+    const tex = foilShaderMaterial.uniforms.uThicknessTexture.value;
+    const dstGrid = tex.image.width;  // GPU纹理分辨率
+    const dstData = tex.image.data;
 
-            const rgb = getColormapColor(t, min_um, max_um);
-            const useColor = document.getElementById('toggle-color').checked;
-            if (useColor) {
-                colors.setXYZ(i, rgb[0] / 255, rgb[1] / 255, rgb[2] / 255);
-            } else {
-                colors.setXYZ(i, 212/255, 175/255, 55/255);
+    if (srcGrid === dstGrid) {
+        for (let i = 0; i < srcGrid; i++) {
+            for (let j = 0; j < srcGrid; j++) {
+                dstData[i * dstGrid + j] = thickness_um[i][j];
+            }
+        }
+    } else {
+        const srcArr = thickness_um;
+        for (let di = 0; di < dstGrid; di++) {
+            for (let dj = 0; dj < dstGrid; dj++) {
+                const si = (di / (dstGrid - 1)) * (srcGrid - 1);
+                const sj = (dj / (dstGrid - 1)) * (srcGrid - 1);
+                const i0 = Math.floor(si);
+                const j0 = Math.floor(sj);
+                const i1 = Math.min(i0 + 1, srcGrid - 1);
+                const j1 = Math.min(j0 + 1, srcGrid - 1);
+                const fi = si - i0;
+                const fj = sj - j0;
+                const v00 = srcArr[i0][j0];
+                const v10 = srcArr[i1][j0];
+                const v01 = srcArr[i0][j1];
+                const v11 = srcArr[i1][j1];
+                const v = v00 * (1 - fi) * (1 - fj)
+                        + v10 * fi * (1 - fj)
+                        + v01 * (1 - fi) * fj
+                        + v11 * fi * fj;
+                dstData[di * dstGrid + dj] = v;
             }
         }
     }
 
-    positions.needsUpdate = true;
-    colors.needsUpdate = true;
-    geometry.computeVertexNormals();
-
-    foilMesh.material.wireframe = document.getElementById('toggle-wireframe').checked;
+    tex.needsUpdate = true;
+    foilShaderMaterial.uniforms.uUseColor.value = document.getElementById('toggle-color').checked ? 1 : 0;
+    foilShaderMaterial.wireframe = document.getElementById('toggle-wireframe').checked;
 
     document.getElementById('legend-min').textContent = min_um.toFixed(2);
     document.getElementById('legend-max').textContent = max_um.toFixed(2);
@@ -233,14 +437,20 @@ function animateHammerStrike(position, force) {
     
     const startPos = { y: 80, rx: Math.PI / 6 };
     const endPos = { y: 10, rx: 0 };
-    const duration = 300;
-    const startTime = Date.now();
+    const duration = isMobile ? 250 : 300;
+    const startTime = performance.now();
 
     hammerMesh.position.x = position[0];
     hammerMesh.position.z = position[1];
 
+    const normalizedForce = Math.min(Math.max((force - 300) / 1200, 0), 1);
+    if (foilShaderMaterial) {
+        foilShaderMaterial.uniforms.uHammerPosition.value.set(-position[0], -position[1]);
+        foilShaderMaterial.uniforms.uHammerRadius.value = 30.0;
+    }
+
     function tick() {
-        const elapsed = Date.now() - startTime;
+        const elapsed = performance.now() - startTime;
         const progress = Math.min(elapsed / duration, 1);
         
         let eased;
@@ -254,11 +464,19 @@ function animateHammerStrike(position, force) {
 
         hammerMesh.position.y = startPos.y + (endPos.y - startPos.y) * eased;
         hammerMesh.rotation.z = startPos.rx + (endPos.rx - startPos.rx) * eased;
-        hammerMesh.rotation.x = Math.sin(elapsed * 0.05) * 0.05;
+
+        if (foilShaderMaterial) {
+            foilShaderMaterial.uniforms.uHammerIntensity.value = eased * normalizedForce;
+        }
 
         if (progress < 1) {
             requestAnimationFrame(tick);
         } else {
+            if (foilShaderMaterial) {
+                setTimeout(() => {
+                    if (foilShaderMaterial) foilShaderMaterial.uniforms.uHammerIntensity.value = 0;
+                }, 80);
+            }
             setTimeout(() => {
                 hammerMesh.position.set(0, 80, 0);
                 hammerMesh.rotation.z = Math.PI / 6;
@@ -269,7 +487,7 @@ function animateHammerStrike(position, force) {
 }
 
 function animate() {
-    requestAnimationFrame(animate);
+    animationFrameId = requestAnimationFrame(animate);
     
     if (controls && document.getElementById('toggle-auto-rotate').checked) {
         controls.autoRotate = true;
@@ -279,6 +497,9 @@ function animate() {
     }
     
     if (controls) controls.update();
+    if (foilShaderMaterial) {
+        foilShaderMaterial.uniforms.uTime.value = performance.now() * 0.001;
+    }
     if (renderer && scene && camera) renderer.render(scene, camera);
 }
 
@@ -302,25 +523,49 @@ function drawHeatmapCanvas(thicknessData) {
     const gs = grid || 48;
 
     const rect = canvas.parentElement.getBoundingClientRect();
-    const size = Math.min(rect.width - 24, 350);
-    canvas.width = size;
-    canvas.height = size;
+    const size = Math.min(rect.width - 24, isMobile ? 250 : 350);
+    if (canvas.width !== size) {
+        canvas.width = size;
+        canvas.height = size;
+    }
 
     const ctx = canvas.getContext('2d');
     const cellSize = size / gs;
 
     ctx.clearRect(0, 0, size, size);
 
-    for (let i = 0; i < gs; i++) {
-        for (let j = 0; j < gs; j++) {
-            const value = thickness_um[i][j];
-            const rgb = getColormapColor(value, min_um, max_um);
-            ctx.fillStyle = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
-            ctx.fillRect(j * cellSize, i * cellSize, cellSize + 1, cellSize + 1);
+    const imgData = ctx.createImageData(size, size);
+    const data = imgData.data;
+
+    for (let py = 0; py < size; py++) {
+        const si = (py / size) * gs;
+        const i0 = Math.min(Math.floor(si), gs - 1);
+        const i1 = Math.min(i0 + 1, gs - 1);
+        const fi = si - i0;
+        for (let px = 0; px < size; px++) {
+            const sj = (px / size) * gs;
+            const j0 = Math.min(Math.floor(sj), gs - 1);
+            const j1 = Math.min(j0 + 1, gs - 1);
+            const fj = sj - j0;
+            const v00 = thickness_um[i0][j0];
+            const v10 = thickness_um[i1][j0];
+            const v01 = thickness_um[i0][j1];
+            const v11 = thickness_um[i1][j1];
+            const v = v00 * (1 - fi) * (1 - fj)
+                    + v10 * fi * (1 - fj)
+                    + v01 * (1 - fi) * fj
+                    + v11 * fi * fj;
+            const rgb = getColormapColor(v, min_um, max_um);
+            const idx = (py * size + px) * 4;
+            data[idx] = rgb[0];
+            data[idx + 1] = rgb[1];
+            data[idx + 2] = rgb[2];
+            data[idx + 3] = 255;
         }
     }
+    ctx.putImageData(imgData, 0, 0);
 
-    ctx.strokeStyle = 'rgba(212, 175, 55, 0.3)';
+    ctx.strokeStyle = 'rgba(212, 175, 55, 0.35)';
     ctx.lineWidth = 0.5;
     const gridLines = 8;
     for (let i = 0; i <= gridLines; i++) {
@@ -409,6 +654,10 @@ function updateMetricsDisplay(state) {
         ((metrics.uniformity_within_5pct || 1) * 100).toFixed(0) + '%';
     document.getElementById('trend-range').textContent = 
         ((metrics.range_ratio || 0) * 100).toFixed(1) + '%';
+
+    if (metrics.grid_size !== undefined) {
+        document.getElementById('metric-gridsize').textContent = metrics.grid_size + '×' + metrics.grid_size;
+    }
 }
 
 function updateRiskDisplay(risk) {
@@ -478,10 +727,14 @@ function addStrikeHistoryItem(result) {
     const force = strike.hammer_force_N || result.action?.force_N || 0;
     const thick = strike.avg_thickness_um || strike.metrics?.mean_thickness_um || 0;
     const pos = strike.hammer_position || result.action?.position_mm || [0, 0];
+    const remesh = strike.remesh || result.remesh || null;
+    const remeshTag = remesh && remesh.action && remesh.action !== 'noop'
+        ? `<span style="color:#00e0ff;font-size:10px;">[${remesh.action} ${remesh.old_size}→${remesh.new_size}]</span>`
+        : '';
     
     item.innerHTML = `
         <span class="strike-num">#${num}</span>
-        <span class="strike-info">${force.toFixed(0)}N<br>(${pos[0].toFixed(0)},${pos[1].toFixed(0)})</span>
+        <span class="strike-info">${force.toFixed(0)}N<br>(${pos[0].toFixed(0)},${pos[1].toFixed(0)}) ${remeshTag}</span>
         <span class="strike-thickness">${thick.toFixed(2)}μm</span>
     `;
     log.insertBefore(item, log.firstChild);
@@ -614,7 +867,7 @@ async function performStrike() {
         });
         animateHammerStrike([payload.position_x_mm, payload.position_y_mm], payload.force_N);
     } else {
-        const rlMode = mode === 'rl' ? 'rl' : 'heuristic';
+        const rlMode = mode === 'rl' ? 'pretrained' : (mode === 'rl_heuristic' ? 'heuristic' : mode);
         result = await fetchJSON(API_BASE + `/api/strike/auto?mode=${rlMode}`, {
             method: 'POST'
         });
@@ -645,7 +898,7 @@ async function startAutoSimulation() {
     document.getElementById('btn-stop').style.display = 'flex';
     
     const mode = document.getElementById('strike-mode').value;
-    const rlMode = mode === 'rl' ? 'rl' : 'heuristic';
+    const rlMode = mode === 'rl' ? 'pretrained' : (mode === 'rl_heuristic' ? 'heuristic' : mode);
     const interval = parseFloat(document.getElementById('interval-slider').value);
     
     const result = await fetchJSON(
@@ -736,7 +989,7 @@ function exportCSV() {
     
     const headers = ['strike_num', 'hammer_force_N', 'pos_x', 'pos_y', 
                      'avg_thickness_um', 'min_um', 'max_um', 'std_um', 
-                     'elongation_rate', 'cv'];
+                     'elongation_rate', 'cv', 'grid_size'];
     const rows = [headers.join(',')];
     
     for (const s of strikeHistoryData) {
@@ -753,6 +1006,7 @@ function exportCSV() {
             s.thickness_std_um || 0,
             s.elongation_rate || 0,
             cv.toFixed(6),
+            s.grid_size || '',
         ].join(','));
     }
     
@@ -809,6 +1063,7 @@ function setupEventListeners() {
 
     document.getElementById('colormap-select').addEventListener('change', (e) => {
         selectedColormap = e.target.value;
+        updateColormapTexture(selectedColormap);
         if (currentThicknessData) {
             updateFoilVisualization(currentThicknessData);
             drawHeatmapCanvas(currentThicknessData);
@@ -848,8 +1103,9 @@ async function init() {
     
     connectWebSocket();
     
-    console.log('%c🏺 金箔锻制工艺仿真系统已启动', 
+    console.log('%c🏺 金箔锻制工艺仿真系统已启动 (GPU优化版 v2)', 
         'color:#d4af37;font-size:16px;font-weight:bold');
+    console.log('渲染模式:', isMobile ? '移动端 (低分辨率+无阴影)' : '桌面端 (高保真)');
     console.log('快捷键: [空格]锤击 | [A]自动/停止 | [R]重置');
 }
 

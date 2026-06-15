@@ -3,6 +3,8 @@ from .rl_optimizer import (
     RLSession,
     RLConfig,
     ActionType,
+    DemoBuffer,
+    DemoTransition,
 )
 
 __all__ = [
@@ -10,4 +12,6 @@ __all__ = [
     "RLSession",
     "RLConfig",
     "ActionType",
+    "DemoBuffer",
+    "DemoTransition",
 ]
