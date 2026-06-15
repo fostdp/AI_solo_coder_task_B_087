@@ -1012,6 +1012,8 @@ class BuddhaGildingConfig:
     foil_size_mm: int = 100
     foil_thickness_um: float = 0.2
     skill_level: float = 0.7
+    foil_roughness_um: float = 0.02
+    polishing_level: float = 0.5
 
 
 class BuddhaGildingSimulator:
@@ -1033,10 +1035,11 @@ class BuddhaGildingSimulator:
                 "drying_time_hours": 12,
                 "durability_years": 50,
                 "surface_finish": "哑光温润",
-                "adhesion_strength_mpa": 1.2,
-                "water_resistance": 0.6,
-                "uv_resistance": 0.7,
-                "ease_of_use": 0.8,
+                "adhesion_strength_mpa": 3.0,
+                "water_resistance": 0.7,
+                "uv_resistance": 0.6,
+                "ease_of_use": 0.6,
+                "roughness_contribution_um": 0.005,
             },
             "modern_acrylic": {
                 "name": "现代丙烯酸胶",
@@ -1048,6 +1051,7 @@ class BuddhaGildingSimulator:
                 "water_resistance": 0.9,
                 "uv_resistance": 0.85,
                 "ease_of_use": 0.9,
+                "roughness_contribution_um": 0.001,
             },
             "gold_leaf_size": {
                 "name": "金箔专用胶 (柿漆)",
@@ -1059,6 +1063,7 @@ class BuddhaGildingSimulator:
                 "water_resistance": 0.8,
                 "uv_resistance": 0.95,
                 "ease_of_use": 0.5,
+                "roughness_contribution_um": 0.003,
             },
         }
 
@@ -1264,11 +1269,16 @@ class BuddhaGildingSimulator:
 
         lighting_effect = self._simulate_lighting(coverage, wrinkles, foil_thickness, adhesive)
 
+        surface_roughness = self._calculate_surface_roughness(
+            coverage, wrinkles, curvature_map, adhesive, config
+        )
+
         quality_score = (
-            avg_coverage * 40
-            + (1.0 - wrinkle_area_pct / 100) * 25
+            avg_coverage * 30
+            + (1.0 - wrinkle_area_pct / 100) * 20
             + uniformity * 20
             + adhesive["durability_years"] / 80 * 15
+            + surface_roughness["glossiness_gu"] / 100 * 15
         )
 
         return {
@@ -1282,6 +1292,7 @@ class BuddhaGildingSimulator:
             "wrinkle_map": wrinkles.tolist(),
             "tear_map": tears.tolist(),
             "lighting_simulation": lighting_effect,
+            "surface_roughness": surface_roughness,
             "metrics": {
                 "average_coverage_pct": float(avg_coverage * 100),
                 "wrinkle_area_pct": wrinkle_area_pct,
@@ -1294,6 +1305,8 @@ class BuddhaGildingSimulator:
                 "estimated_drying_time_hours": adhesive["drying_time_hours"],
                 "durability_years": adhesive["durability_years"],
                 "quality_score": float(quality_score),
+                "surface_roughness_ra_um": surface_roughness["ra_um"],
+                "glossiness_gu": surface_roughness["glossiness_gu"],
             },
             "difficulty_assessment": {
                 "overall_difficulty": max(
@@ -1310,6 +1323,110 @@ class BuddhaGildingSimulator:
             "height_field_preview": surface["height_field"],
             "curvature_map_preview": curvature_map.tolist(),
         }
+
+    def _calculate_surface_roughness(
+        self,
+        coverage: np.ndarray,
+        wrinkles: np.ndarray,
+        curvature_map: np.ndarray,
+        adhesive: Dict,
+        config: BuddhaGildingConfig,
+    ) -> Dict[str, Any]:
+        """
+        计算贴金后的表面粗糙度分布
+        粗糙度模型：
+        Ra = sqrt(foil_roughness^2 + adhesive_roughness^2 + wrinkle_roughness^2 + curvature_roughness^2)
+
+        返回包含完整粗糙度参数的结果
+        """
+        grid_size = coverage.shape[0]
+
+        foil_roughness = np.full((grid_size, grid_size), config.foil_roughness_um)
+
+        adhesive_roughness = np.full_like(foil_roughness, adhesive.get("roughness_contribution_um", 0.003))
+        adhesive_roughness *= (1.0 + (1.0 - coverage) * 0.5)
+
+        wrinkle_roughness = wrinkles * 0.05
+
+        curvature_roughness = np.zeros_like(foil_roughness)
+        for i in range(grid_size):
+            for j in range(grid_size):
+                curv = curvature_map[i, j]
+                if curv == "flat_surface":
+                    curvature_roughness[i, j] = 0.0
+                elif curv == "gentle_curve":
+                    curvature_roughness[i, j] = 0.002
+                elif curv == "sharp_curve":
+                    curvature_roughness[i, j] = 0.008
+                elif curv == "complex_3d":
+                    curvature_roughness[i, j] = 0.015
+                else:
+                    curvature_roughness[i, j] = 0.005
+
+        total_roughness = np.sqrt(
+            foil_roughness ** 2
+            + adhesive_roughness ** 2
+            + wrinkle_roughness ** 2
+            + curvature_roughness ** 2
+        )
+
+        polishing_factor = 1.0 - config.polishing_level * 0.4
+        total_roughness *= polishing_factor
+
+        ra_value = float(np.mean(total_roughness))
+        rq_value = float(np.sqrt(np.mean(total_roughness ** 2)))
+        rz_value = float(np.mean(np.sort(total_roughness, axis=None)[-int(grid_size * grid_size * 0.1):]))
+        rt_value = float(np.max(total_roughness))
+
+        roughness_profile = total_roughness[grid_size // 2, :].tolist()
+
+        glossiness = self._calculate_glossiness(ra_value, adhesive)
+
+        return {
+            "ra_um": ra_value,
+            "rq_um": rq_value,
+            "rz_um": rz_value,
+            "rt_um": rt_value,
+            "rq_over_ra": rq_value / max(ra_value, 1e-9),
+            "glossiness_gu": glossiness,
+            "roughness_map": total_roughness.tolist(),
+            "profile_cross_section": roughness_profile,
+            "components": {
+                "foil_roughness_um": float(np.mean(foil_roughness)),
+                "adhesive_roughness_um": float(np.mean(adhesive_roughness)),
+                "wrinkle_roughness_um": float(np.mean(wrinkle_roughness)),
+                "curvature_roughness_um": float(np.mean(curvature_roughness)),
+            },
+            "polishing_factor": polishing_factor,
+            "surface_classification": self._classify_roughness(ra_value),
+        }
+
+    def _calculate_glossiness(self, ra_um: float, adhesive: Dict) -> float:
+        """根据粗糙度计算光泽度（GU单位）"""
+        base_gloss = {
+            "哑光温润": 30.0,
+            "半哑光": 60.0,
+            "光亮平滑": 95.0,
+        }.get(adhesive.get("surface_finish", "半哑光"), 60.0)
+
+        roughness_factor = np.exp(-ra_um * 50)
+
+        return float(base_gloss * roughness_factor)
+
+    def _classify_roughness(self, ra_um: float) -> str:
+        """根据Ra值对表面粗糙度进行分级"""
+        if ra_um < 0.005:
+            return "超光滑 (镜面级)"
+        elif ra_um < 0.01:
+            return "极光滑 (装饰级)"
+        elif ra_um < 0.03:
+            return "光滑 (贴金级)"
+        elif ra_um < 0.08:
+            return "半光滑"
+        elif ra_um < 0.2:
+            return "微粗糙"
+        else:
+            return "粗糙"
 
     def _simulate_lighting(
         self,
@@ -1414,6 +1531,16 @@ class StrikeFeedback:
     sound_duration_ms: int
     quality_score: float
     message: str
+    force_curve: list = None
+    impact_peak_force_n: float = 0.0
+    plastic_resistance_force_n: float = 0.0
+    elastic_rebound_force_n: float = 0.0
+    damping_coefficient: float = 0.85
+    strike_duration_ms: float = 50.0
+    haptic_pattern: str = "normal_tap"
+    force_rise_time_ms: float = 12.5
+    force_decay_time_ms: float = 37.5
+    rebound_velocity: float = 0.0
 
 
 class VirtualForgingExperience:
@@ -1489,6 +1616,115 @@ class VirtualForgingExperience:
             {"step": 6, "title": "小心破裂", "content": "避免在同一位置连续重锤，否则金箔会破裂！", "duration_sec": 6},
             {"step": 7, "title": "开始您的创作", "content": "目标：将500μm厚的金片锻打到0.5μm，均匀度90%以上。祝您成功！", "duration_sec": 8},
         ]
+
+    def _calculate_force_curve(
+        self,
+        hammer_force_n: float,
+        thickness_reduction: float,
+        material_hardness_hv: float,
+        strike_duration_ms: float = 50.0,
+        num_samples: int = 100,
+    ) -> Dict[str, Any]:
+        """
+        计算锤击过程的力反馈曲线
+        力反馈模型：包含冲击力、塑性变形阻力、弹性回复力、阻尼衰减
+        """
+        t = np.linspace(0, strike_duration_ms, num_samples)
+        t_peak = strike_duration_ms * 0.25
+
+        impact_peak = hammer_force_n * 1.2
+
+        rise_factor = np.exp(-((t - t_peak) ** 2) / (2 * (t_peak / 3) ** 2))
+        decay_factor = np.exp(-(t - t_peak) / (strike_duration_ms * 0.3))
+        impact_curve = np.where(t < t_peak, rise_factor, decay_factor)
+        impact_curve = impact_curve / np.max(impact_curve) * impact_peak
+
+        plastic_resistance = material_hardness_hv * 9.80665 * 0.1
+        plastic_activation = 1.0 - np.exp(-thickness_reduction * 50)
+        plastic_force = plastic_resistance * plastic_activation
+
+        elastic_modulus = 79e9
+        foil_thickness_ratio = 0.1
+        elastic_force = elastic_modulus * foil_thickness_ratio * thickness_reduction * 1e-6
+        elastic_force = min(elastic_force, hammer_force_n * 0.3)
+
+        damping_coeff = 0.85
+        damped_response = np.zeros_like(t)
+        for i in range(len(t)):
+            if t[i] < t_peak:
+                damped_response[i] = impact_curve[i]
+            else:
+                decay = np.exp(-damping_coeff * (t[i] - t_peak) / (strike_duration_ms * 0.5))
+                rebound = elastic_force * np.sin(2 * np.pi * (t[i] - t_peak) / (strike_duration_ms * 0.4))
+                damped_response[i] = plastic_force * decay + rebound * decay
+
+        total_force = impact_curve * 0.6 + damped_response * 0.4
+        total_force = np.clip(total_force, 0, impact_peak * 1.1)
+
+        peak_idx = int(t_peak / strike_duration_ms * num_samples)
+        rise_time = t_peak
+        decay_time = strike_duration_ms - t_peak
+
+        rebound_vel = (elastic_force / (hammer_force_n * 0.001)) * 0.1
+        rebound_vel = float(np.clip(rebound_vel, 0, 5.0))
+
+        haptic_pattern = self._classify_haptic_pattern(
+            impact_peak, plastic_force, elastic_force, thickness_reduction
+        )
+
+        return {
+            "time_ms": t.tolist(),
+            "force_curve_n": total_force.tolist(),
+            "impact_peak_force_n": float(impact_peak),
+            "plastic_resistance_force_n": float(plastic_force),
+            "elastic_rebound_force_n": float(elastic_force),
+            "damping_coefficient": float(damping_coeff),
+            "strike_duration_ms": float(strike_duration_ms),
+            "force_rise_time_ms": float(rise_time),
+            "force_decay_time_ms": float(decay_time),
+            "haptic_pattern": haptic_pattern,
+            "rebound_velocity": rebound_vel,
+            "components": {
+                "impact": [float(f) for f in impact_curve],
+                "plastic": [float(plastic_force * decay) for decay in np.exp(-damping_coeff * (t - t_peak) / (strike_duration_ms * 0.5))],
+                "elastic_rebound": [float(elastic_force * np.sin(2 * np.pi * (ti - t_peak) / (strike_duration_ms * 0.4)) * np.exp(-damping_coeff * (ti - t_peak) / (strike_duration_ms * 0.5))) if ti >= t_peak else 0.0 for ti in t],
+            }
+        }
+
+    def _classify_haptic_pattern(
+        self,
+        impact_force: float,
+        plastic_force: float,
+        elastic_force: float,
+        reduction: float,
+    ) -> str:
+        """根据力反馈特征分类触觉模式"""
+        plastic_ratio = plastic_force / max(impact_force, 1e-6)
+        elastic_ratio = elastic_force / max(impact_force, 1e-6)
+
+        if reduction < 0.005:
+            return "light_tap"
+        elif elastic_ratio > 0.3:
+            return "bouncy"
+        elif plastic_ratio > 0.5:
+            return "sticky"
+        elif impact_force > 2000:
+            return "heavy_impact"
+        elif reduction > 0.05:
+            return "deep_press"
+        else:
+            return "normal_tap"
+
+    def _get_alloy_hardness(self, alloy_key: str) -> float:
+        """获取合金的维氏硬度"""
+        alloy_configs = {
+            "pure_gold_24k": 25,
+            "gold_copper_22k": 60,
+            "gold_copper_18k": 120,
+            "gold_silver_22k": 45,
+            "ternary_alloy_18k": 95,
+        }
+        return alloy_configs.get(alloy_key, 25)
 
     def get_strike_feedback(
         self,
@@ -1580,6 +1816,16 @@ class VirtualForgingExperience:
             feedback_force *= haptic_params["force_feedback_gain"]
             vibration *= haptic_params["impact_intensity_factor"]
 
+        hardness_hv = self._get_alloy_hardness(config.alloy_key)
+        strike_duration = hammer_params.strike_duration_ms or 50.0
+
+        force_curve_result = self._calculate_force_curve(
+            hammer_force_n=hammer_params.force,
+            thickness_reduction=max(thickness_reduction, 0),
+            material_hardness_hv=hardness_hv,
+            strike_duration_ms=strike_duration,
+        )
+
         return StrikeFeedback(
             vibration_intensity=float(np.clip(vibration, 0, 1)),
             force_feedback=float(feedback_force),
@@ -1588,6 +1834,16 @@ class VirtualForgingExperience:
             sound_duration_ms=int(sound_dur),
             quality_score=float(quality),
             message=message,
+            force_curve=force_curve_result["force_curve_n"],
+            impact_peak_force_n=force_curve_result["impact_peak_force_n"],
+            plastic_resistance_force_n=force_curve_result["plastic_resistance_force_n"],
+            elastic_rebound_force_n=force_curve_result["elastic_rebound_force_n"],
+            damping_coefficient=force_curve_result["damping_coefficient"],
+            strike_duration_ms=force_curve_result["strike_duration_ms"],
+            haptic_pattern=force_curve_result["haptic_pattern"],
+            force_rise_time_ms=force_curve_result["force_rise_time_ms"],
+            force_decay_time_ms=force_curve_result["force_decay_time_ms"],
+            rebound_velocity=force_curve_result["rebound_velocity"],
         )
 
     def calculate_score(
