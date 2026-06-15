@@ -517,6 +517,287 @@ const GoldFoil3D = (function () {
         return { ...vizThicknessRange };
     }
 
+    let buddhaMesh = null;
+    let currentProcessMode = 'forging';
+    let pvdCoatingMaterial = null;
+
+    const ALLOY_COLORS = {
+        pure_gold_24k: [255, 215, 0],
+        gold_copper_22k: [255, 200, 50],
+        gold_copper_18k: [255, 180, 80],
+        gold_silver_22k: [255, 225, 150],
+        ternary_alloy_18k: [255, 195, 100],
+    };
+
+    function setAlloyColor(alloyKey) {
+        if (!foilShaderMaterial) return;
+        const rgb = ALLOY_COLORS[alloyKey] || ALLOY_COLORS.pure_gold_24k;
+        const color = new THREE.Color(
+            rgb[0] / 255,
+            rgb[1] / 255,
+            rgb[2] / 255
+        );
+        foilShaderMaterial.uniforms.uGoldColor.value = color;
+    }
+
+    function setProcessMode(mode) {
+        currentProcessMode = mode;
+        if (!foilMesh) return;
+
+        if (mode === 'pvd') {
+            if (!pvdCoatingMaterial) {
+                pvdCoatingMaterial = new THREE.MeshStandardMaterial({
+                    color: 0xd4af37,
+                    metalness: 0.95,
+                    roughness: 0.05,
+                    envMapIntensity: 1.2,
+                });
+            }
+            foilMesh.material = pvdCoatingMaterial;
+        } else if (mode === 'electroplating') {
+            const electroMat = new THREE.MeshStandardMaterial({
+                color: 0xffd700,
+                metalness: 0.85,
+                roughness: 0.15,
+                envMapIntensity: 1.0,
+            });
+            foilMesh.material = electroMat;
+        } else {
+            foilMesh.material = foilShaderMaterial;
+        }
+    }
+
+    function _createBuddhaGeometry(type) {
+        const group = new THREE.Group();
+
+        const bodyGeo = new THREE.SphereGeometry(30, isMobileFlag ? 16 : 32, isMobileFlag ? 16 : 32);
+        bodyGeo.scale(1, 1.3, 0.8);
+        const bodyMat = new THREE.MeshPhongMaterial({ color: 0x8B4513 });
+        const body = new THREE.Mesh(bodyGeo, bodyMat);
+        body.position.y = 0;
+        group.add(body);
+
+        const headGeo = new THREE.SphereGeometry(18, isMobileFlag ? 16 : 32, isMobileFlag ? 16 : 32);
+        const headMat = new THREE.MeshPhongMaterial({ color: 0xA0522D });
+        const head = new THREE.Mesh(headGeo, headMat);
+        head.position.y = 45;
+        group.add(head);
+
+        const ushnishaGeo = new THREE.SphereGeometry(6, isMobileFlag ? 8 : 16, isMobileFlag ? 8 : 16);
+        const ushnisha = new THREE.Mesh(ushnishaGeo, headMat);
+        ushnisha.position.y = 60;
+        group.add(ushnisha);
+
+        const hairBumpsGeo = new THREE.SphereGeometry(14, isMobileFlag ? 16 : 32, isMobileFlag ? 16 : 32, 0, Math.PI * 2, 0, Math.PI / 2.5);
+        const hairMat = new THREE.MeshPhongMaterial({ color: 0x2F1810 });
+        const hair = new THREE.Mesh(hairBumpsGeo, hairMat);
+        hair.position.y = 48;
+        group.add(hair);
+
+        if (type === 'meditation') {
+            const armGeo = new THREE.CylinderGeometry(5, 5, 40, isMobileFlag ? 8 : 16);
+            const armMat = new THREE.MeshPhongMaterial({ color: 0xA0522D });
+            const leftArm = new THREE.Mesh(armGeo, armMat);
+            leftArm.position.set(-25, 5, 0);
+            leftArm.rotation.z = Math.PI / 2.5;
+            group.add(leftArm);
+            const rightArm = new THREE.Mesh(armGeo, armMat);
+            rightArm.position.set(25, 5, 0);
+            rightArm.rotation.z = -Math.PI / 2.5;
+            group.add(rightArm);
+        } else if (type === 'teaching') {
+            const armGeo = new THREE.CylinderGeometry(5, 5, 40, isMobileFlag ? 8 : 16);
+            const armMat = new THREE.MeshPhongMaterial({ color: 0xA0522D });
+            const rightArm = new THREE.Mesh(armGeo, armMat);
+            rightArm.position.set(15, 25, 0);
+            rightArm.rotation.z = -Math.PI / 6;
+            group.add(rightArm);
+            const leftArm = new THREE.Mesh(armGeo, armMat);
+            leftArm.position.set(-20, 5, 0);
+            leftArm.rotation.z = Math.PI / 2.5;
+            group.add(leftArm);
+        } else if (type === 'abhayamudra') {
+            const armGeo = new THREE.CylinderGeometry(5, 5, 40, isMobileFlag ? 8 : 16);
+            const armMat = new THREE.MeshPhongMaterial({ color: 0xA0522D });
+            const rightArm = new THREE.Mesh(armGeo, armMat);
+            rightArm.position.set(15, 30, 0);
+            rightArm.rotation.z = -Math.PI / 8;
+            group.add(rightArm);
+            const leftArm = new THREE.Mesh(armGeo, armMat);
+            leftArm.position.set(-20, 5, 0);
+            leftArm.rotation.z = Math.PI / 2.5;
+            group.add(leftArm);
+        } else if (type === 'guanyin') {
+            const armGeo = new THREE.CylinderGeometry(5, 5, 40, isMobileFlag ? 8 : 16);
+            const armMat = new THREE.MeshPhongMaterial({ color: 0xDEB887 });
+            const bodyMatG = new THREE.MeshPhongMaterial({ color: 0xFFFFFF });
+            body.material = bodyMatG;
+            head.material = new THREE.MeshPhongMaterial({ color: 0xFFE4C4 });
+            const rightArm = new THREE.Mesh(armGeo, armMat);
+            rightArm.position.set(15, 20, 0);
+            rightArm.rotation.z = -Math.PI / 4;
+            group.add(rightArm);
+            const leftArm = new THREE.Mesh(armGeo, armMat);
+            leftArm.position.set(-15, 20, 0);
+            leftArm.rotation.z = Math.PI / 4;
+            group.add(leftArm);
+        }
+
+        const haloGeo = new THREE.RingGeometry(35, 45, isMobileFlag ? 32 : 64);
+        const haloMat = new THREE.MeshBasicMaterial({
+            color: 0xFFD700,
+            transparent: true,
+            opacity: 0.6,
+            side: THREE.DoubleSide,
+        });
+        const halo = new THREE.Mesh(haloGeo, haloMat);
+        halo.position.y = 50;
+        halo.position.z = -20;
+        group.add(halo);
+
+        const lotusGeo = new THREE.CylinderGeometry(25, 35, 15, isMobileFlag ? 16 : 32);
+        const lotusMat = new THREE.MeshPhongMaterial({ color: 0xF5DEB3 });
+        const lotus = new THREE.Mesh(lotusGeo, lotusMat);
+        lotus.position.y = -35;
+        group.add(lotus);
+
+        return group;
+    }
+
+    function showBuddhaModel(type = 'meditation', applyGilding = true, gildingData = null) {
+        if (!scene) return;
+
+        if (buddhaMesh) {
+            scene.remove(buddhaMesh);
+            buddhaMesh = null;
+        }
+
+        if (foilMesh) {
+            foilMesh.visible = false;
+        }
+        if (hammerMesh) {
+            hammerMesh.visible = false;
+        }
+
+        buddhaMesh = _createBuddhaGeometry(type);
+
+        if (applyGilding && gildingData) {
+            const gildingMaterial = new THREE.MeshStandardMaterial({
+                color: gildingData.color || 0xFFD700,
+                metalness: gildingData.metalness !== undefined ? gildingData.metalness : 0.9,
+                roughness: gildingData.roughness !== undefined ? gildingData.roughness : 0.1,
+            });
+
+            buddhaMesh.traverse((child) => {
+                if (child.isMesh && child.geometry.type !== 'RingGeometry') {
+                    child.material = gildingMaterial;
+                }
+            });
+        }
+
+        buddhaMesh.position.y = 10;
+        scene.add(buddhaMesh);
+
+        if (controls) {
+            controls.target.set(0, 15, 0);
+            controls.update();
+        }
+    }
+
+    function hideBuddhaModel() {
+        if (buddhaMesh && scene) {
+            scene.remove(buddhaMesh);
+            buddhaMesh = null;
+        }
+        if (foilMesh) {
+            foilMesh.visible = true;
+        }
+        if (hammerMesh) {
+            hammerMesh.visible = true;
+        }
+        if (controls) {
+            controls.target.set(0, 0, 0);
+            controls.update();
+        }
+    }
+
+    function setVirtualHammerVisible(visible) {
+        if (hammerMesh) {
+            hammerMesh.visible = visible;
+        }
+    }
+
+    function setHammerPosition(x, y) {
+        if (hammerMesh) {
+            hammerMesh.position.x = x;
+            hammerMesh.position.z = y;
+        }
+    }
+
+    function animateVirtualStrike(position, force, duration = 300) {
+        if (!hammerMesh) return;
+
+        const startPos = { y: 80, rx: Math.PI / 6 };
+        const endPos = { y: 10, rx: 0 };
+        const startTime = performance.now();
+
+        hammerMesh.position.x = position[0];
+        hammerMesh.position.z = position[1];
+
+        const normalizedForce = Math.min(Math.max((force - 300) / 1200, 0), 1);
+        if (foilShaderMaterial) {
+            foilShaderMaterial.uniforms.uHammerPosition.value.set(-position[0], -position[1]);
+            foilShaderMaterial.uniforms.uHammerRadius.value = 30.0;
+        }
+
+        function tick() {
+            const elapsed = performance.now() - startTime;
+            const progress = Math.min(elapsed / duration, 1);
+
+            let eased;
+            if (progress < 0.5) {
+                eased = progress * 2;
+                eased = eased * eased;
+            } else {
+                eased = 1 - (progress - 0.5) * 2;
+                eased = 1 - eased * eased;
+            }
+
+            hammerMesh.position.y = startPos.y + (endPos.y - startPos.y) * eased;
+            hammerMesh.rotation.z = startPos.rx + (endPos.rx - startPos.rx) * eased;
+
+            if (foilShaderMaterial) {
+                foilShaderMaterial.uniforms.uHammerIntensity.value = eased * normalizedForce;
+            }
+
+            if (progress < 1) {
+                requestAnimationFrame(tick);
+            } else {
+                if (foilShaderMaterial) {
+                    setTimeout(() => {
+                        if (foilShaderMaterial) foilShaderMaterial.uniforms.uHammerIntensity.value = 0;
+                    }, 80);
+                }
+                setTimeout(() => {
+                    hammerMesh.position.set(0, 80, 0);
+                    hammerMesh.rotation.z = Math.PI / 6;
+                }, 100);
+            }
+        }
+        tick();
+    }
+
+    function updateFoilAppearance(parameters) {
+        if (!foilShaderMaterial) return;
+
+        if (parameters.color) {
+            foilShaderMaterial.uniforms.uGoldColor.value = new THREE.Color(parameters.color);
+        }
+        if (parameters.metalness !== undefined && foilShaderMaterial.uniforms.uShininess) {
+            foilShaderMaterial.uniforms.uShininess.value = parameters.metalness * 100 + 50;
+        }
+    }
+
     return {
         init,
         updateThickness,
@@ -528,7 +809,18 @@ const GoldFoil3D = (function () {
         resize,
         getColormaps,
         getThicknessRange,
+        setAlloyColor,
+        setProcessMode,
+        showBuddhaModel,
+        hideBuddhaModel,
+        setVirtualHammerVisible,
+        setHammerPosition,
+        animateVirtualStrike,
+        updateFoilAppearance,
         get isMobile() { return isMobileFlag; },
         get foilSize() { return foilSizeMm; },
+        get scene() { return scene; },
+        get foilMesh() { return foilMesh; },
+        get hammerMesh() { return hammerMesh; },
     };
 })();

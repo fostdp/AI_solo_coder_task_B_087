@@ -30,6 +30,9 @@ from physics.physics_model import (
     HammerParameters,
     MaterialProperties,
     RemeshConfig,
+    AlloyComposition,
+    get_alloy_composition,
+    compare_alloys,
 )
 from rl.rl_optimizer import RLSession, ActionType, RLConfig
 from modules.common import load_material_config, load_rl_config
@@ -74,6 +77,106 @@ FORCE_PRESETS: Dict[str, Dict[str, float]] = {
     },
 }
 
+
+ALLOY_PRESETS: Dict[str, Dict[str, Any]] = {
+    "pure_gold_24k": {
+        "name": "纯金 (24K)",
+        "gold_ratio": 0.9999,
+        "copper_ratio": 0.0,
+        "silver_ratio": 0.0,
+        "malleability_factor": 1.0,
+        "hardness_vickers": 25,
+        "recrystallization_temp_c": 200,
+        "desc": "最高纯度，延展性极佳，色泽纯正金黄",
+        "typical_uses": ["高档佛像贴金", "皇家器物", "收藏级工艺品"],
+    },
+    "gold_copper_22k": {
+        "name": "金铜合金 (22K)",
+        "gold_ratio": 0.9167,
+        "copper_ratio": 0.0833,
+        "silver_ratio": 0.0,
+        "malleability_factor": 0.85,
+        "hardness_vickers": 45,
+        "recrystallization_temp_c": 230,
+        "desc": "传统佛像贴金常用，硬度提高，色泽偏红",
+        "typical_uses": ["寺院佛像贴金", "建筑装饰", "传统首饰"],
+    },
+    "gold_copper_18k": {
+        "name": "金铜合金 (18K)",
+        "gold_ratio": 0.75,
+        "copper_ratio": 0.25,
+        "silver_ratio": 0.0,
+        "malleability_factor": 0.65,
+        "hardness_vickers": 70,
+        "recrystallization_temp_c": 260,
+        "desc": "硬度更高，耐磨，色泽红铜色",
+        "typical_uses": ["日常首饰", "耐用装饰", "工业应用"],
+    },
+    "gold_silver_22k": {
+        "name": "金银合金 (22K)",
+        "gold_ratio": 0.9167,
+        "copper_ratio": 0.0,
+        "silver_ratio": 0.0833,
+        "malleability_factor": 0.92,
+        "hardness_vickers": 35,
+        "recrystallization_temp_c": 220,
+        "desc": "延展性好，色泽偏青，古代称为'青金'",
+        "typical_uses": ["高档首饰", "精细工艺品", "古建修复"],
+    },
+    "ternary_alloy_18k": {
+        "name": "金铜银三元合金 (18K)",
+        "gold_ratio": 0.75,
+        "copper_ratio": 0.125,
+        "silver_ratio": 0.125,
+        "malleability_factor": 0.75,
+        "hardness_vickers": 60,
+        "recrystallization_temp_c": 245,
+        "desc": "综合性能均衡，色泽柔和",
+        "typical_uses": ["精密首饰", "特种装饰", "工业镀层"],
+    },
+}
+
+PROCESS_PRESETS: Dict[str, Dict[str, Any]] = {
+    "traditional_forging": {
+        "name": "传统锻制工艺",
+        "type": "mechanical",
+        "uniformity": 0.7,
+        "energy_efficiency": 0.3,
+        "environmental_impact": 0.4,
+        "surface_quality": 0.6,
+        "labor_intensity": 0.9,
+        "production_speed": 0.2,
+        "material_utilization": 0.95,
+        "historical_value": 1.0,
+        "desc": "南京金箔传统锻制，千锤百炼，非物质文化遗产",
+    },
+    "pvd_coating": {
+        "name": "现代真空镀膜 (PVD)",
+        "type": "physical_vapor_deposition",
+        "uniformity": 0.95,
+        "energy_efficiency": 0.5,
+        "environmental_impact": 0.7,
+        "surface_quality": 0.95,
+        "labor_intensity": 0.1,
+        "production_speed": 0.8,
+        "material_utilization": 0.85,
+        "historical_value": 0.0,
+        "desc": "物理气相沉积，高精度、高均匀度现代工艺",
+    },
+    "electroplating": {
+        "name": "现代电镀工艺",
+        "type": "electrochemical",
+        "uniformity": 0.85,
+        "energy_efficiency": 0.6,
+        "environmental_impact": 0.2,
+        "surface_quality": 0.8,
+        "labor_intensity": 0.2,
+        "production_speed": 0.9,
+        "material_utilization": 0.7,
+        "historical_value": 0.1,
+        "desc": "电化学沉积，成本低，但有环保隐患",
+    },
+}
 
 PATH_PRESETS = {
     "center_out": "由中心向外分层打（南京金箔传统路径）",
@@ -278,15 +381,37 @@ class GoldFoilSimulator:
         grid_size: int = 48,
         use_influxdb: bool = True,
         api_base: Optional[str] = None,
+        alloy_key: Optional[str] = None,
+        process_mode: str = "traditional_forging",
     ):
         self.foil_id = foil_id
         self.craftsman_id = craftsman_id
         self.running = False
         self.session_id = f"session-{int(time.time())}"
+        self.alloy_key = alloy_key
+        self.process_mode = process_mode
 
         mat_cfg = load_material_config()
-        material = MaterialProperties(**mat_cfg.get("material", {}))
+        if alloy_key and alloy_key in ALLOY_PRESETS:
+            alloy_cfg = ALLOY_PRESETS[alloy_key]
+            alloy = AlloyComposition(
+                gold_ratio=alloy_cfg["gold_ratio"],
+                copper_ratio=alloy_cfg["copper_ratio"],
+                silver_ratio=alloy_cfg["silver_ratio"],
+                malleability_factor=alloy_cfg["malleability_factor"],
+                hardness_vickers=alloy_cfg["hardness_vickers"],
+                recrystallization_temp_c=alloy_cfg["recrystallization_temp_c"],
+                name=alloy_cfg["name"],
+            )
+            material = alloy.to_material_properties()
+            print(f"[SIM] 使用合金: {alloy_cfg['name']} ({alloy_key})")
+        else:
+            material = MaterialProperties(**mat_cfg.get("material", {}))
+
         remesh_cfg = RemeshConfig(**mat_cfg.get("remesh", {}))
+
+        self.alloy_info = ALLOY_PRESETS.get(alloy_key) if alloy_key else None
+        self.process_info = PROCESS_PRESETS.get(process_mode)
 
         self.physics = GoldFoilPhysicsModel(
             grid_size=grid_size,
@@ -582,6 +707,17 @@ def list_presets():
     print("\n可用力度预设 (--force <name>):")
     for name, cfg in FORCE_PRESETS.items():
         print(f"  {name:18s}  {cfg['desc']} ({cfg['min']:.0f}-{cfg['max']:.0f}N)")
+    print("\n可用合金配比 (--alloy <name>):")
+    for name, cfg in ALLOY_PRESETS.items():
+        print(f"  {name:22s}  {cfg['name']}")
+        print(f"                        {cfg['desc']}")
+        print(f"                        金{cfg['gold_ratio']*100:.1f}% 铜{cfg['copper_ratio']*100:.1f}% 银{cfg['silver_ratio']*100:.1f}%")
+        print(f"                        延展性:{cfg['malleability_factor']*100:.0f}% 硬度:{cfg['hardness_vickers']}HV")
+    print("\n可用工艺模式 (--process <name>):")
+    for name, cfg in PROCESS_PRESETS.items():
+        print(f"  {name:22s}  {cfg['name']}")
+        print(f"                        {cfg['desc']}")
+        print(f"                        均匀度:{cfg['uniformity']*100:.0f}% 能效:{cfg['energy_efficiency']*100:.0f}% 环保:{cfg['environmental_impact']*100:.0f}%")
 
 
 def main():
@@ -601,6 +737,8 @@ def main():
     p.add_argument("--grid-size", type=int, default=48)
     p.add_argument("--initial-thickness", type=float, default=None, help="初始厚度μm")
     p.add_argument("--no-influxdb", action="store_true")
+    p.add_argument("--alloy", type=str, default=None, help="合金配比, --list-presets查看")
+    p.add_argument("--process", type=str, default="traditional_forging", help="工艺模式, --list-presets查看")
     args = p.parse_args()
 
     if args.list_presets:
@@ -636,6 +774,8 @@ def main():
         grid_size=args.grid_size,
         use_influxdb=not args.no_influxdb,
         api_base=API_BASE,
+        alloy_key=args.alloy,
+        process_mode=args.process,
     )
 
     if init_t is not None:

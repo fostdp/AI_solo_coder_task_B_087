@@ -21,7 +21,31 @@
             </div>
         </header>
 
+        <nav class="feature-tabs">
+            <button class="tab-btn active" data-tab="simulation">
+                <span class="tab-icon">🔨</span>
+                <span class="tab-label">工艺仿真</span>
+            </button>
+            <button class="tab-btn" data-tab="alloys">
+                <span class="tab-icon">🔬</span>
+                <span class="tab-label">合金配比</span>
+            </button>
+            <button class="tab-btn" data-tab="process">
+                <span class="tab-icon">⚙️</span>
+                <span class="tab-label">工艺对比</span>
+            </button>
+            <button class="tab-btn" data-tab="buddha">
+                <span class="tab-icon">🏵️</span>
+                <span class="tab-label">佛像贴金</span>
+            </button>
+            <button class="tab-btn" data-tab="experience">
+                <span class="tab-icon">🎮</span>
+                <span class="tab-label">虚拟体验</span>
+            </button>
+        </nav>
+
         <div class="main-content">
+            <div class="tab-content active" id="tab-simulation">
             <aside class="sidebar-left">
                 <div class="panel">
                     <h3>📊 实时指标</h3>
@@ -211,6 +235,211 @@
                     <button id="btn-export-csv" class="btn btn-secondary btn-block">导出指标 (CSV)</button>
                 </div>
             </aside>
+            </div>
+
+            <div class="tab-content" id="tab-alloys">
+                <div class="feature-main">
+                    <div class="panel">
+                        <h3>🔬 金箔合金配比分析</h3>
+                        <p class="panel-description">不同金铜银配比对金箔延展性、硬度、色泽的影响</p>
+                        <div class="alloy-list" id="alloy-list"></div>
+                    </div>
+                    <div class="panel">
+                        <h3>📊 合金性能对比</h3>
+                        <div class="control-row">
+                            <label>选择合金进行对比（可多选）：</label>
+                            <div class="checkbox-group" id="alloy-compare-select"></div>
+                            <label>温度: <span id="alloy-temp-label">25</span>°C</label>
+                            <input type="range" id="alloy-temp-slider" min="0" max="600" value="25" step="25">
+                            <button id="btn-compare-alloys" class="btn btn-primary">对比性能</button>
+                        </div>
+                        <div id="alloy-compare-result" class="compare-result"></div>
+                        <div id="alloy-radar-container">
+                            <canvas id="alloy-radar-canvas" width="500" height="400"></canvas>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-process">
+                <div class="feature-main">
+                    <div class="panel">
+                        <h3>⚙️ 古代锻制 vs 现代工艺对比</h3>
+                        <p class="panel-description">传统金箔锻制与现代真空镀膜、电镀工艺的全面对比分析</p>
+                        <div class="control-row">
+                            <label>目标厚度: <span id="process-thickness-label">0.2</span> μm</label>
+                            <input type="range" id="process-thickness-slider" min="0.01" max="5" value="0.2" step="0.01">
+                            <label>生产面积: <span id="process-area-label">10</span> m²</label>
+                            <input type="range" id="process-area-slider" min="1" max="100" value="10" step="1">
+                            <label>应用场景：</label>
+                            <select id="process-usecase">
+                                <option value="buddha_gilding">佛像贴金</option>
+                                <option value="decoration">装饰装潢</option>
+                                <option value="jewelry">珠宝首饰</option>
+                                <option value="architecture">建筑装饰</option>
+                            </select>
+                            <button id="btn-compare-process" class="btn btn-primary">开始对比</button>
+                        </div>
+                        <div id="process-compare-result" class="compare-result"></div>
+                        <div id="process-radar-container">
+                            <canvas id="process-radar-canvas" width="500" height="400"></canvas>
+                        </div>
+                        <div class="process-detail-grid" id="process-detail-grid"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-buddha">
+                <div class="feature-main">
+                    <div class="panel">
+                        <h3>🏵️ 佛像贴金效果仿真</h3>
+                        <p class="panel-description">模拟不同曲率表面上的金箔贴合效果、褶皱风险与光照反射</p>
+                        <div class="control-row">
+                            <label>佛像类型：</label>
+                            <select id="buddha-type">
+                                <option value="meditation">禅定印佛像</option>
+                                <option value="teaching">说法印佛像</option>
+                                <option value="abhayamudra">施无畏印佛像</option>
+                                <option value="guanyin">观音像</option>
+                            </select>
+                            <label>胶粘剂：</label>
+                            <select id="buddha-adhesive">
+                                <option value="gold_leaf_size">金箔专用胶 (柿漆)</option>
+                                <option value="traditional_animal_glue">传统动物胶</option>
+                                <option value="modern_acrylic">现代丙烯酸胶</option>
+                            </select>
+                            <label>技能水平: <span id="buddha-skill-label">0.7</span></label>
+                            <input type="range" id="buddha-skill-slider" min="0.1" max="1" value="0.7" step="0.1">
+                            <label class="checkbox-inline">
+                                <input type="checkbox" id="buddha-use-current-foil" checked> 使用当前仿真金箔
+                            </label>
+                            <button id="btn-simulate-gilding" class="btn btn-primary">开始贴金仿真</button>
+                        </div>
+                        <div class="buddha-viz-container">
+                            <div class="buddha-viz-item">
+                                <h4>高度场预览</h4>
+                                <canvas id="buddha-height-canvas" width="300" height="300"></canvas>
+                            </div>
+                            <div class="buddha-viz-item">
+                                <h4>曲率分布</h4>
+                                <canvas id="buddha-curvature-canvas" width="300" height="300"></canvas>
+                            </div>
+                            <div class="buddha-viz-item">
+                                <h4>贴金覆盖率</h4>
+                                <canvas id="buddha-coverage-canvas" width="300" height="300"></canvas>
+                            </div>
+                            <div class="buddha-viz-item">
+                                <h4>褶皱分布</h4>
+                                <canvas id="buddha-wrinkle-canvas" width="300" height="300"></canvas>
+                            </div>
+                            <div class="buddha-viz-item">
+                                <h4>光照效果</h4>
+                                <canvas id="buddha-lighting-canvas" width="300" height="300"></canvas>
+                            </div>
+                            <div class="buddha-viz-item">
+                                <h4>破裂风险</h4>
+                                <canvas id="buddha-tear-canvas" width="300" height="300"></canvas>
+                            </div>
+                        </div>
+                        <div id="buddha-result" class="compare-result"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="tab-content" id="tab-experience">
+                <div class="feature-main experience-main">
+                    <div class="panel experience-panel">
+                        <div class="experience-header">
+                            <div class="experience-title">
+                                <h3>🎮 虚拟打金箔体验</h3>
+                                <p class="panel-description">亲手操作锻锤，体验非物质文化遗产的魅力</p>
+                            </div>
+                            <div class="experience-stats">
+                                <div class="exp-stat">
+                                    <span class="exp-stat-label">得分</span>
+                                    <span class="exp-stat-value" id="exp-score">0</span>
+                                </div>
+                                <div class="exp-stat">
+                                    <span class="exp-stat-label">连击</span>
+                                    <span class="exp-stat-value" id="exp-combo">0</span>
+                                </div>
+                                <div class="exp-stat">
+                                    <span class="exp-stat-label">锤击</span>
+                                    <span class="exp-stat-value" id="exp-strikes">0</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="experience-controls">
+                            <div class="control-row">
+                                <label>难度模式：</label>
+                                <select id="exp-mode">
+                                    <option value="beginner">👶 初学者模式</option>
+                                    <option value="intermediate">⚔️ 进阶模式</option>
+                                    <option value="master">👑 大师模式</option>
+                                </select>
+                                <label>合金选择：</label>
+                                <select id="exp-alloy">
+                                    <option value="pure_gold_24k">纯金 (24K)</option>
+                                    <option value="gold_copper_22k">金铜合金 (22K)</option>
+                                    <option value="gold_silver_22k">金银合金 (22K)</option>
+                                    <option value="gold_copper_18k">金铜合金 (18K)</option>
+                                    <option value="ternary_alloy_18k">金铜银三元合金 (18K)</option>
+                                </select>
+                                <button id="btn-exp-reset" class="btn btn-secondary">↺ 重新开始</button>
+                            </div>
+
+                            <div class="tutorial-banner" id="tutorial-banner">
+                                <div class="tutorial-content">
+                                    <span class="tutorial-step" id="tutorial-step">1/7</span>
+                                    <h4 id="tutorial-title">认识工具</h4>
+                                    <p id="tutorial-text">这是您的锻锤，可以通过鼠标或触控操作控制锤击力度和位置</p>
+                                </div>
+                                <div class="tutorial-nav">
+                                    <button id="tutorial-prev" class="btn btn-sm">← 上一步</button>
+                                    <button id="tutorial-next" class="btn btn-primary btn-sm">下一步 →</button>
+                                    <button id="tutorial-skip" class="btn btn-sm btn-link">跳过教程</button>
+                                </div>
+                            </div>
+
+                            <div class="experience-game-area">
+                                <div class="hammer-control">
+                                    <div class="force-meter">
+                                        <div class="force-bar" id="force-bar"></div>
+                                        <div class="force-marker" id="force-marker"></div>
+                                        <span class="force-label">力度: <span id="exp-force-label">500</span> N</span>
+                                    </div>
+                                    <div class="strike-zone">
+                                        <canvas id="exp-strike-canvas" width="400" height="400"></canvas>
+                                        <div class="strike-hint" id="strike-hint">💡 点击画布进行锤击！厚处（红色）打重锤，薄处（蓝色）打轻锤</div>
+                                    </div>
+                                </div>
+
+                                <div class="achievements-panel">
+                                    <h4>🏆 成就系统</h4>
+                                    <div class="achievements-grid" id="achievements-grid"></div>
+                                </div>
+                            </div>
+
+                            <div class="feedback-display" id="feedback-display">
+                                <div class="feedback-message" id="feedback-message">准备开始！</div>
+                            </div>
+
+                            <div class="experience-actions">
+                                <button id="btn-exp-strike" class="btn btn-primary btn-large">
+                                    🔨 锤击！(空格键)
+                                </button>
+                                <button id="btn-exp-anneal" class="btn btn-warning btn-large">
+                                    🔥 退火
+                                </button>
+                                <button id="btn-exp-gilding" class="btn btn-success btn-large">
+                                    🏵️ 完成并贴金
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
 
@@ -218,6 +447,7 @@
 
     <script src="/static/js/modules/gold_foil_3d.js"></script>
     <script src="/static/js/modules/thickness_panel.js"></script>
+    <script src="/static/js/modules/advanced_features.js"></script>
     <script src="/static/js/app.js"></script>
 </body>
 </html>

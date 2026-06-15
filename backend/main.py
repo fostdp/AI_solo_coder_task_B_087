@@ -41,7 +41,19 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from physics.physics_model import HammerParameters
+from physics.physics_model import (
+    HammerParameters,
+    AlloyComposition,
+    ProcessComparisonEngine,
+    ProcessComparisonResult,
+    BuddhaGildingSimulator,
+    BuddhaGildingConfig,
+    VirtualForgingExperience,
+    VirtualExperienceConfig,
+    StrikeFeedback,
+    get_alloy_composition,
+    compare_alloys,
+)
 from modules.common import RedisBus, REDIS_CHANNELS, load_material_config, load_rl_config
 from modules.dtu_receiver import DtuReceiver
 from modules.plasticity_simulator import PlasticitySimulator
@@ -87,6 +99,42 @@ class SimulationConfig(BaseModel):
     target_thickness_um: float = Field(0.5, ge=0.05, le=50, description="目标厚度 (μm)")
 
 
+class AlloySelectRequest(BaseModel):
+    alloy_key: str = Field("pure_gold_24k", description="合金配比键名")
+
+
+class AlloyCompareRequest(BaseModel):
+    alloy_keys: List[str] = Field(["pure_gold_24k", "gold_copper_22k", "gold_silver_22k"], description="要对比的合金列表")
+    temperature_c: float = Field(25.0, description="环境温度")
+
+
+class ProcessCompareRequest(BaseModel):
+    target_thickness_um: float = Field(0.2, ge=0.01, le=10, description="目标厚度")
+    production_area_m2: float = Field(10.0, ge=1, description="生产面积")
+    use_case: str = Field("buddha_gilding", description="应用场景: buddha_gilding/decoration/jewelry/architecture")
+
+
+class BuddhaGildingRequest(BaseModel):
+    buddha_type: str = Field("meditation", description="佛像类型: meditation/teaching/abhayamudra/guanyin")
+    adhesive_type: str = Field("gold_leaf_size", description="胶粘剂类型: traditional_animal_glue/modern_acrylic/gold_leaf_size")
+    skill_level: float = Field(0.7, ge=0.1, le=1.0, description="工匠技能水平")
+    use_current_foil: bool = Field(True, description="是否使用当前仿真金箔的厚度分布")
+
+
+class VirtualExperienceStrikeRequest(BaseModel):
+    force_N: float = Field(500.0, ge=200, le=3000, description="锤击力度")
+    position_x_mm: float = Field(0.0, description="X坐标")
+    position_y_mm: float = Field(0.0, description="Y坐标")
+    radius_mm: float = Field(15.0, description="锤头半径")
+    experience_mode: str = Field("beginner", description="体验模式: beginner/intermediate/master")
+
+
+class VirtualExperienceInitRequest(BaseModel):
+    mode: str = Field("beginner", description="体验模式")
+    alloy_key: str = Field("pure_gold_24k", description="合金配比")
+    target_thickness_um: float = Field(0.5, description="目标厚度")
+
+
 class GoldFoilSystem:
     """系统总成 - 整合所有模块，提供统一API入口"""
 
@@ -113,6 +161,33 @@ class GoldFoilSystem:
         self.foil_id = "NF-LIVE-001"
         self.craftsman_id = "master_wu"
         self.session_id = self.plasticity.session_id
+
+        self._alloy_config = self.mat_config.get("alloy_compositions", {})
+        self._process_config = self.mat_config.get("process_comparison", {})
+        self._buddha_config = self.mat_config.get("buddha_gilding", {})
+        self._experience_config = self.mat_config.get("virtual_experience", {})
+
+        self.process_comparison_engine = ProcessComparisonEngine(self._process_config)
+        self.buddha_gilding_simulator = BuddhaGildingSimulator()
+        self.virtual_experience = VirtualForgingExperience()
+
+        self.current_alloy_key = "pure_gold_24k"
+        self.current_alloy = get_alloy_composition(self.current_alloy_key, self._alloy_config)
+
+        self.virtual_experience_stats = {
+            "total_strikes": 0,
+            "anneal_count": 0,
+            "max_uniformity": 0.0,
+            "target_reached": False,
+            "completed_without_tear": True,
+            "strikes_in_60s": 0,
+            "alloys_tried": [self.current_alloy_key],
+            "gilding_completed": False,
+        }
+        self.achievements_unlocked: List[str] = []
+        self.consecutive_good_strikes = 0
+        self.last_strike_time = 0.0
+        self.experience_session_start = time.time()
 
         self._init_influxdb()
 
@@ -354,6 +429,295 @@ class GoldFoilSystem:
         if mode == "rl":
             return ActionType.Q_LEARNING
         return ActionType.HEURISTIC
+
+    def set_alloy_composition(self, alloy_key: str) -> dict:
+        """设置当前合金配比"""
+        with self._lock:
+            alloy = get_alloy_composition(alloy_key, self._alloy_config)
+            if alloy is None:
+                raise ValueError(f"未知合金配比: {alloy_key}")
+
+            self.current_alloy = alloy
+            self.current_alloy_key = alloy_key
+
+            mat_props = alloy.to_material_properties()
+            self.plasticity.physics.material = mat_props
+            self.plasticity.physics.reset()
+
+            if alloy_key not in self.virtual_experience_stats["alloys_tried"]:
+                self.virtual_experience_stats["alloys_tried"].append(alloy_key)
+
+            return {
+                "message": f"已切换至 {alloy.name}",
+                "alloy": {
+                    "key": alloy.key,
+                    "name": alloy.name,
+                    "composition": {
+                        "gold_pct": alloy.gold_ratio * 100,
+                        "copper_pct": alloy.copper_ratio * 100,
+                        "silver_pct": alloy.silver_ratio * 100,
+                    },
+                    "ductility_metrics": alloy.get_ductility_metrics(),
+                    "material_properties": {
+                        "youngs_modulus_gpa": mat_props.youngs_modulus,
+                        "yield_strength_mpa": mat_props.yield_strength,
+                        "ultimate_strength_mpa": mat_props.ultimate_strength,
+                        "density_kgm3": mat_props.density,
+                        "recrystallization_temp_c": mat_props.recrystallization_temp,
+                        "melting_point_c": mat_props.melting_point,
+                    },
+                    "color_rgb": list(alloy.color_rgb),
+                    "historical_period": alloy.historical_period,
+                    "typical_uses": alloy.typical_uses,
+                    "description": alloy.description,
+                },
+            }
+
+    def get_alloy_list(self) -> dict:
+        """获取所有可用合金配比列表"""
+        with self._lock:
+            alloys = []
+            for key, cfg in self._alloy_config.items():
+                alloy = get_alloy_composition(key, self._alloy_config)
+                if alloy:
+                    alloys.append({
+                        "key": key,
+                        "name": alloy.name,
+                        "composition": {
+                            "gold_pct": alloy.gold_ratio * 100,
+                            "copper_pct": alloy.copper_ratio * 100,
+                            "silver_pct": alloy.silver_ratio * 100,
+                        },
+                        "malleability_factor": alloy.malleability_factor,
+                        "hardness_vickers": alloy.hardness_vickers,
+                        "color_rgb": list(alloy.color_rgb),
+                        "historical_period": alloy.historical_period,
+                        "typical_uses": alloy.typical_uses,
+                        "description": alloy.description,
+                    })
+            return {
+                "current_alloy_key": self.current_alloy_key,
+                "alloys": sorted(alloys, key=lambda a: -a["composition"]["gold_pct"]),
+            }
+
+    def compare_alloys(self, alloy_keys: List[str], temperature_c: float = 25.0) -> dict:
+        """对比多种合金性能"""
+        with self._lock:
+            return compare_alloys(alloy_keys, self._alloy_config)
+
+    def compare_processes(
+        self,
+        target_thickness_um: float = 0.2,
+        production_area_m2: float = 10.0,
+        use_case: str = "buddha_gilding",
+    ) -> dict:
+        """对比古代锻制 vs 现代真空镀膜 vs 现代电镀工艺"""
+        with self._lock:
+            result = self.process_comparison_engine.compare_processes(
+                target_thickness_um=target_thickness_um,
+                production_area_m2=production_area_m2,
+                use_case=use_case,
+            )
+            return {
+                "target_thickness_um": target_thickness_um,
+                "production_area_m2": production_area_m2,
+                "use_case": use_case,
+                "ancient_forging": result.ancient,
+                "modern_vacuum_coating": result.modern_vacuum,
+                "modern_electroplating": result.modern_electroplating,
+                "recommendation": result.recommendation,
+                "radar_chart_data": result.radar_chart_data,
+                "comparison_summary": {
+                    "best_uniformity": "真空镀膜 (PVD)",
+                    "best_energy_efficiency": "古代锻制",
+                    "best_labor_efficiency": "真空镀膜 (PVD)",
+                    "lowest_environmental_impact": "古代锻制",
+                    "best_surface_quality": "真空镀膜 (PVD)",
+                    "lowest_cost": "古代锻制",
+                },
+            }
+
+    def simulate_buddha_gilding(
+        self,
+        buddha_type: str = "meditation",
+        adhesive_type: str = "gold_leaf_size",
+        skill_level: float = 0.7,
+        use_current_foil: bool = True,
+    ) -> dict:
+        """模拟佛像贴金效果"""
+        with self._lock:
+            config = BuddhaGildingConfig(
+                buddha_type=buddha_type,
+                adhesive_type=adhesive_type,
+                skill_level=skill_level,
+            )
+
+            thickness_dist = None
+            if use_current_foil:
+                thickness_dist = self.plasticity.physics.thickness_um.copy()
+                avg_thick = float(np.mean(thickness_dist))
+                config.foil_thickness_um = avg_thick
+
+            result = self.buddha_gilding_simulator.simulate_gilding(config, thickness_dist)
+            self.virtual_experience_stats["gilding_completed"] = True
+
+            return result
+
+    def virtual_experience_strike(
+        self,
+        force_N: float,
+        position_x_mm: float,
+        position_y_mm: float,
+        radius_mm: float,
+        experience_mode: str = "beginner",
+    ) -> dict:
+        """虚拟打金体验 - 处理一次锤击"""
+        with self._lock:
+            now = time.time()
+
+            mode_cfg = self.virtual_experience.mode_configs.get(
+                experience_mode, self.virtual_experience.mode_configs["beginner"]
+            )
+
+            force_range = mode_cfg["hammer_force_range_n"]
+            force_clamped = float(np.clip(force_N, force_range[0], force_range[1]))
+
+            if mode_cfg.get("auto_thickness_protection"):
+                min_thick = float(np.min(self.plasticity.physics.thickness_um))
+                if min_thick < 0.15:
+                    force_clamped = min(force_clamped, force_range[0] + (force_range[1] - force_range[0]) * 0.3)
+
+            hammer_params = HammerParameters(
+                force=force_clamped,
+                position_x_mm=position_x_mm,
+                position_y_mm=position_y_mm,
+                radius_mm=radius_mm,
+            )
+
+            prev_thickness = self.plasticity.physics.thickness_um.copy()
+
+            strike_result = self.plasticity.apply_strike_direct(hammer_params)
+            state = self.get_state()
+
+            exp_config = VirtualExperienceConfig(
+                mode=experience_mode,
+                target_thickness_um=0.5,
+                alloy_key=self.current_alloy_key,
+            )
+
+            feedback = self.virtual_experience.get_strike_feedback(
+                hammer_params=hammer_params,
+                strike_result=strike_result,
+                prev_thickness=prev_thickness,
+                current_thickness=self.plasticity.physics.thickness_um,
+                config=exp_config,
+            )
+
+            self.virtual_experience_stats["total_strikes"] += 1
+
+            metrics = state["thickness_distribution"]["metrics"]
+            uniformity = metrics["uniformity_within_10pct"]
+            if uniformity > self.virtual_experience_stats["max_uniformity"]:
+                self.virtual_experience_stats["max_uniformity"] = uniformity
+
+            mean_thick = metrics["mean_thickness_um"]
+            if mean_thick <= 0.5:
+                self.virtual_experience_stats["target_reached"] = True
+
+            if state["fracture_risk"]["risk_level"] == "high" or strike_result.get("min_thickness_um", 1) < 0.1:
+                self.virtual_experience_stats["completed_without_tear"] = False
+
+            if now - self.experience_session_start < 60:
+                self.virtual_experience_stats["strikes_in_60s"] = self.virtual_experience_stats["total_strikes"]
+
+            if feedback.quality_score > 0.7:
+                self.consecutive_good_strikes += 1
+            else:
+                self.consecutive_good_strikes = max(0, self.consecutive_good_strikes - 1)
+
+            score_result = self.virtual_experience.calculate_score(
+                current_metrics=metrics,
+                feedback=feedback,
+                config=exp_config,
+                consecutive_good_strikes=self.consecutive_good_strikes,
+            )
+
+            new_achievements = self.virtual_experience.check_achievements(
+                stats=self.virtual_experience_stats,
+                unlocked=self.achievements_unlocked,
+            )
+
+            self.last_strike_time = now
+
+            return {
+                "strike_result": strike_result,
+                "state": state,
+                "feedback": {
+                    "vibration_intensity": feedback.vibration_intensity,
+                    "force_feedback": feedback.force_feedback,
+                    "visual_effect": feedback.visual_effect,
+                    "sound_frequency_hz": feedback.sound_frequency_hz,
+                    "sound_duration_ms": feedback.sound_duration_ms,
+                    "quality_score": feedback.quality_score,
+                    "message": feedback.message,
+                },
+                "score": score_result,
+                "new_achievements": new_achievements,
+                "stats": self.virtual_experience_stats.copy(),
+                "experience_mode": experience_mode,
+                "force_applied_N": force_clamped,
+                "force_was_limited": force_clamped != force_N,
+            }
+
+    def get_virtual_experience_status(self) -> dict:
+        """获取虚拟体验状态"""
+        with self._lock:
+            return {
+                "stats": self.virtual_experience_stats.copy(),
+                "achievements_unlocked": self.achievements_unlocked.copy(),
+                "all_achievements": self.virtual_experience.achievements,
+                "consecutive_good_strikes": self.consecutive_good_strikes,
+                "session_duration_sec": time.time() - self.experience_session_start,
+                "current_mode": "beginner",
+                "mode_configs": self.virtual_experience.mode_configs,
+            }
+
+    def reset_virtual_experience(self, mode: str = "beginner", alloy_key: str = "pure_gold_24k") -> dict:
+        """重置虚拟打金体验"""
+        with self._lock:
+            self.virtual_experience_stats = {
+                "total_strikes": 0,
+                "anneal_count": 0,
+                "max_uniformity": 0.0,
+                "target_reached": False,
+                "completed_without_tear": True,
+                "strikes_in_60s": 0,
+                "alloys_tried": [alloy_key],
+                "gilding_completed": False,
+            }
+            self.achievements_unlocked = []
+            self.consecutive_good_strikes = 0
+            self.experience_session_start = time.time()
+
+            self.reset()
+
+            if alloy_key != self.current_alloy_key:
+                self.set_alloy_composition(alloy_key)
+
+            return {
+                "message": "虚拟体验已重置",
+                "mode": mode,
+                "alloy_key": alloy_key,
+                "tutorial": self.virtual_experience.tutorial_steps,
+            }
+
+    def get_tutorial_step(self, step_index: int) -> dict:
+        """获取教程步骤"""
+        with self._lock:
+            step = self.virtual_experience.get_tutorial_step(step_index)
+            if step is None:
+                raise ValueError(f"无效的教程步骤: {step_index}")
+            return step
 
     def query_history(self, measurement="forging_metrics", window_minutes=60, limit=1000):
         if not self.influxdb_available:
@@ -655,6 +1019,180 @@ async def trigger_pretrain(
 async def get_mesh_quality():
     """自适应网格重划 - 质量诊断报告"""
     return system.get_mesh_quality()
+
+
+# =============================================================
+# 新功能 API 端点：合金配比、工艺对比、佛像贴金、虚拟打金体验
+# =============================================================
+
+@app.get("/api/alloys")
+async def get_all_alloys():
+    """获取所有可用合金配比列表"""
+    return system.get_alloy_list()
+
+
+@app.post("/api/alloys/select")
+async def select_alloy(request: AlloySelectRequest):
+    """切换当前合金配比"""
+    try:
+        result = system.set_alloy_composition(request.alloy_key)
+        await system.alarm_ws.ws_manager.broadcast({
+            "channel": "state_update",
+            "data": {"event": "alloy_changed", **result}
+        })
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/alloys/compare")
+async def compare_alloys_endpoint(request: AlloyCompareRequest):
+    """对比多种合金的性能参数"""
+    result = system.compare_alloys(request.alloy_keys, request.temperature_c)
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+    return result
+
+
+@app.get("/api/alloys/{alloy_key}/ductility")
+async def get_alloy_ductility(
+    alloy_key: str,
+    temperature_c: float = Query(25.0, ge=0, le=1000, description="温度 (°C)"),
+):
+    """获取指定合金在特定温度下的延展性指标"""
+    alloy = get_alloy_composition(alloy_key, system._alloy_config)
+    if alloy is None:
+        raise HTTPException(status_code=404, detail=f"未知合金: {alloy_key}")
+    return {
+        "alloy_key": alloy_key,
+        "temperature_c": temperature_c,
+        "ductility_metrics": alloy.get_ductility_metrics(temperature_c),
+    }
+
+
+@app.post("/api/process/compare")
+async def compare_processes_endpoint(request: ProcessCompareRequest):
+    """对比古代锻制 vs 现代真空镀膜 vs 现代电镀工艺"""
+    return system.compare_processes(
+        target_thickness_um=request.target_thickness_um,
+        production_area_m2=request.production_area_m2,
+        use_case=request.use_case,
+    )
+
+
+@app.get("/api/process/info")
+async def get_process_info():
+    """获取三种工艺的详细参数信息"""
+    return {
+        "ancient_forging": system._process_config.get("ancient_forging", {}),
+        "modern_vacuum_coating": system._process_config.get("modern_vacuum_coating", {}),
+        "modern_electroplating": system._process_config.get("modern_electroplating", {}),
+    }
+
+
+@app.post("/api/buddha/gilding/simulate")
+async def simulate_buddha_gilding_endpoint(request: BuddhaGildingRequest):
+    """模拟佛像贴金效果"""
+    try:
+        result = system.simulate_buddha_gilding(
+            buddha_type=request.buddha_type,
+            adhesive_type=request.adhesive_type,
+            skill_level=request.skill_level,
+            use_current_foil=request.use_current_foil,
+        )
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/buddha/types")
+async def get_buddha_types():
+    """获取可用佛像类型列表"""
+    return {
+        "buddha_types": [
+            {"key": "meditation", "name": "禅定印佛像", "description": "跏趺静坐，右手结禅定印"},
+            {"key": "teaching", "name": "说法印佛像", "description": "右手结说法印，象征讲经说法"},
+            {"key": "abhayamudra", "name": "施无畏印佛像", "description": "右手举掌施无畏印，代表拔除众生恐惧"},
+            {"key": "guanyin", "name": "观音像", "description": "手持净瓶柳枝，头戴宝冠，装饰璎珞"},
+        ],
+        "adhesive_types": [
+            {"key": "traditional_animal_glue", "name": "传统动物胶", "durability": "50年", "drying": "12小时"},
+            {"key": "modern_acrylic", "name": "现代丙烯酸胶", "durability": "15年", "drying": "4小时"},
+            {"key": "gold_leaf_size", "name": "金箔专用胶 (柿漆)", "durability": "80年", "drying": "24小时"},
+        ],
+    }
+
+
+@app.post("/api/experience/strike")
+async def virtual_experience_strike_endpoint(request: VirtualExperienceStrikeRequest):
+    """虚拟打金体验 - 处理一次锤击"""
+    try:
+        result = system.virtual_experience_strike(
+            force_N=request.force_N,
+            position_x_mm=request.position_x_mm,
+            position_y_mm=request.position_y_mm,
+            radius_mm=request.radius_mm,
+            experience_mode=request.experience_mode,
+        )
+
+        if "alert" in result["strike_result"]:
+            await system.alarm_ws.ws_manager.broadcast({
+                "channel": "alerts",
+                "data": result["strike_result"]["alert"]
+            }, channel="alerts")
+
+        await system.alarm_ws.ws_manager.broadcast({
+            "channel": "state_update",
+            "data": {
+                "event": "experience_strike",
+                **{k: v for k, v in result.items() if k != "state"}
+            }
+        })
+
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/experience/status")
+async def get_virtual_experience_status_endpoint():
+    """获取虚拟打金体验状态（成就、统计等）"""
+    return system.get_virtual_experience_status()
+
+
+@app.post("/api/experience/reset")
+async def reset_virtual_experience_endpoint(request: VirtualExperienceInitRequest):
+    """重置虚拟打金体验"""
+    try:
+        result = system.reset_virtual_experience(
+            mode=request.mode,
+            alloy_key=request.alloy_key,
+        )
+        await system.alarm_ws.ws_manager.broadcast({
+            "channel": "state_update",
+            "data": {"event": "experience_reset", **result}
+        })
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/api/experience/tutorial/{step_index}")
+async def get_tutorial_step_endpoint(step_index: int):
+    """获取虚拟体验教程步骤"""
+    try:
+        return system.get_tutorial_step(step_index)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/api/experience/achievements")
+async def get_all_achievements():
+    """获取所有可解锁成就列表"""
+    return {
+        "achievements": system.virtual_experience.achievements,
+        "unlocked": system.achievements_unlocked,
+    }
 
 
 @app.websocket("/ws")

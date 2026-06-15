@@ -335,4 +335,144 @@ async function init() {
     console.log('快捷键: [空格]锤击 | [A]自动/停止 | [R]重置');
 }
 
+const apiClient = {
+    async getAllAlloys() {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/alloys');
+    },
+
+    async selectAlloy(alloyKey) {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/alloys/select', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ alloy_key: alloyKey }),
+        });
+    },
+
+    async compareAlloys(alloyKeys, temperatureC = 25) {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/alloys/compare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ alloy_keys: alloyKeys, temperature_c: temperatureC }),
+        });
+    },
+
+    async getDuctility(alloyKey, temperatureC = 25) {
+        return await ThicknessPanel.fetchJSON(API_BASE + `/api/alloys/${alloyKey}/ductility?temperature_c=${temperatureC}`);
+    },
+
+    async compareProcesses(targetThicknessUm, areaM2, useCase) {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/process/compare', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                target_thickness_um: targetThicknessUm,
+                area_m2: areaM2,
+                use_case: useCase,
+            }),
+        });
+    },
+
+    async getProcessInfo() {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/process/info');
+    },
+
+    async simulateBuddhaGilding(buddhaType, adhesiveType, skillLevel, useCurrentFoil, thicknessData) {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/buddha/gilding/simulate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                buddha_type: buddhaType,
+                adhesive_type: adhesiveType,
+                skill_level: skillLevel,
+                use_current_foil: useCurrentFoil,
+                thickness_distribution: thicknessData,
+            }),
+        });
+    },
+
+    async getBuddhaTypes() {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/buddha/types');
+    },
+
+    async virtualExperienceStrike(forceN, positionX, positionY, radiusMm, mode) {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/experience/strike', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                force_n: forceN,
+                position_x_mm: positionX,
+                position_y_mm: positionY,
+                radius_mm: radiusMm,
+                mode: mode,
+            }),
+        });
+    },
+
+    async getVirtualExperienceStatus() {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/experience/status');
+    },
+
+    async resetVirtualExperience(mode, alloyKey) {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/experience/reset', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode, alloy_key: alloyKey }),
+        });
+    },
+
+    async getTutorialStep(step) {
+        return await ThicknessPanel.fetchJSON(API_BASE + `/api/experience/tutorial/${step}`);
+    },
+
+    async getAchievements() {
+        return await ThicknessPanel.fetchJSON(API_BASE + '/api/experience/achievements');
+    },
+};
+
+let alloyPanel = null;
+let processPanel = null;
+let buddhaPanel = null;
+let virtualExperience = null;
+
+function setupTabSwitching() {
+    const tabBtns = document.querySelectorAll('.tab-btn');
+    const tabContents = document.querySelectorAll('.tab-content');
+
+    tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+            const targetTab = btn.dataset.tab;
+
+            tabBtns.forEach(b => b.classList.remove('active'));
+            tabContents.forEach(c => c.classList.remove('active'));
+
+            btn.classList.add('active');
+            const targetContent = document.getElementById(`tab-${targetTab}`);
+            if (targetContent) {
+                targetContent.classList.add('active');
+            }
+
+            if (targetTab === 'experience' && virtualExperience) {
+                setTimeout(() => virtualExperience.onTabActivated?.(), 100);
+            }
+        });
+    });
+}
+
+function initAdvancedFeatures() {
+    alloyPanel = new AlloyPanel(apiClient);
+    processPanel = new ProcessComparisonPanel(apiClient);
+    buddhaPanel = new BuddhaGildingPanel(apiClient);
+    virtualExperience = new VirtualExperience(apiClient, GoldFoil3D);
+
+    console.log('%c✨ 高级功能模块已初始化', 'color:#d4af37;font-size:14px;font-weight:bold');
+    console.log('模块: AlloyPanel + ProcessComparisonPanel + BuddhaGildingPanel + VirtualExperience');
+}
+
+const _originalInit = init;
+async function init() {
+    await _originalInit();
+    setupTabSwitching();
+    initAdvancedFeatures();
+}
+
 document.addEventListener('DOMContentLoaded', init);

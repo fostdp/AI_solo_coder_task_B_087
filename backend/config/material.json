@@ -11,6 +11,187 @@
     "recrystallization_temp": 200.0,
     "melting_point": 1064.0
   },
+  "alloy_compositions": {
+    "pure_gold_24k": {
+      "name": "纯金 (24K)",
+      "gold_ratio": 0.9999,
+      "copper_ratio": 0.0,
+      "silver_ratio": 0.0,
+      "color_rgb": [255, 215, 0],
+      "malleability_factor": 1.0,
+      "hardness_vickers": 25,
+      "historical_period": "商代至今",
+      "typical_uses": ["皇家器物", "佛像贴金", "高级装饰"],
+      "description": "99.99% 纯金，延展性最佳，南京金箔传统用料"
+    },
+    "gold_copper_22k": {
+      "name": "金铜合金 (22K)",
+      "gold_ratio": 0.9167,
+      "copper_ratio": 0.0833,
+      "silver_ratio": 0.0,
+      "color_rgb": [255, 200, 50],
+      "malleability_factor": 0.85,
+      "hardness_vickers": 60,
+      "historical_period": "唐代开始普及",
+      "typical_uses": ["日用金器", "建筑装饰", "普通佛像"],
+      "description": "91.67%金 + 8.33%铜，硬度增加，耐磨性提升，金箔不易破损"
+    },
+    "gold_copper_18k": {
+      "name": "金铜合金 (18K)",
+      "gold_ratio": 0.7500,
+      "copper_ratio": 0.2500,
+      "silver_ratio": 0.0,
+      "color_rgb": [255, 180, 60],
+      "malleability_factor": 0.65,
+      "hardness_vickers": 120,
+      "historical_period": "近现代",
+      "typical_uses": ["首饰", "现代装饰", "经济型贴金"],
+      "description": "75%金 + 25%铜，硬度高，色泽偏红，延展性降低"
+    },
+    "gold_silver_22k": {
+      "name": "金银合金 (22K)",
+      "gold_ratio": 0.9167,
+      "copper_ratio": 0.0,
+      "silver_ratio": 0.0833,
+      "color_rgb": [255, 225, 100],
+      "malleability_factor": 0.95,
+      "hardness_vickers": 45,
+      "historical_period": "宋代",
+      "typical_uses": ["高级首饰", "宫廷器物", "重要佛像"],
+      "description": "91.67%金 + 8.33%银，色泽更亮偏青白色，延展性接近纯金，硬度适中"
+    },
+    "ternary_alloy_18k": {
+      "name": "金铜银三元合金 (18K)",
+      "gold_ratio": 0.7500,
+      "copper_ratio": 0.1250,
+      "silver_ratio": 0.1250,
+      "color_rgb": [245, 205, 85],
+      "malleability_factor": 0.80,
+      "hardness_vickers": 95,
+      "historical_period": "明清时期",
+      "typical_uses": ["三色金工艺", "高级首饰", "皇家建筑"],
+      "description": "75%金 + 12.5%铜 + 12.5%银，传统三色金配方，色泽温润柔和"
+    }
+  },
+  "process_comparison": {
+    "ancient_forging": {
+      "name": "古代锻制工艺",
+      "max_thickness_reduction": 0.999,
+      "min_achievable_thickness_um": 0.08,
+      "uniformity_error_pct": 5.0,
+      "energy_consumption_kwh_per_m2": 8.5,
+      "labor_hours_per_m2": 120,
+      "environmental_impact_score": 3,
+      "surface_roughness_um": 0.02,
+      "typical_defects": ["局部过薄", "边缘破裂", "厚度不均"],
+      "quality_control": ["人工目检", "透光试验", "称重法"]
+    },
+    "modern_vacuum_coating": {
+      "name": "现代真空镀膜 (PVD)",
+      "max_thickness_reduction": 1.0,
+      "min_achievable_thickness_um": 0.01,
+      "uniformity_error_pct": 0.5,
+      "energy_consumption_kwh_per_m2": 45.0,
+      "labor_hours_per_m2": 2.5,
+      "environmental_impact_score": 7,
+      "surface_roughness_um": 0.002,
+      "typical_defects": ["针孔", "附着力差", "应力开裂"],
+      "quality_control": ["光谱分析", "膜厚仪", "附着力测试"]
+    },
+    "modern_electroplating": {
+      "name": "现代电镀工艺",
+      "max_thickness_reduction": 1.0,
+      "min_achievable_thickness_um": 0.1,
+      "uniformity_error_pct": 2.0,
+      "energy_consumption_kwh_per_m2": 15.0,
+      "labor_hours_per_m2": 8.0,
+      "environmental_impact_score": 9,
+      "surface_roughness_um": 0.01,
+      "typical_defects": ["镀层不均", "氢脆", "环境污染"],
+      "quality_control": ["库仑法测厚", "盐雾试验", "结合力测试"]
+    }
+  },
+  "buddha_gilding": {
+    "standard_foil_size_mm": 100,
+    "foil_thickness_range_um": [0.1, 0.5],
+    "adhesive_types": {
+      "traditional_animal_glue": {
+        "name": "传统动物胶",
+        "components": ["牛骨胶", "明矾", "水"],
+        "drying_time_hours": 12,
+        "durability_years": 50,
+        "surface_finish": "哑光温润",
+        "historical_period": "汉代至今"
+      },
+      "modern_acrylic": {
+        "name": "现代丙烯酸胶",
+        "components": ["丙烯酸树脂", "固化剂", "溶剂"],
+        "drying_time_hours": 4,
+        "durability_years": 15,
+        "surface_finish": "光亮平滑",
+        "historical_period": "20世纪后"
+      },
+      "gold_leaf_size": {
+        "name": "金箔专用胶 (柿漆)",
+        "components": ["柿漆", "糯米胶", "明矾"],
+        "drying_time_hours": 24,
+        "durability_years": 80,
+        "surface_finish": "半哑光",
+        "historical_period": "唐代由日本传入"
+      }
+    },
+    "surface_curvature_effect": {
+      "flat_surface": {
+        "coverage_efficiency_pct": 95,
+        "wrinkle_risk_pct": 5,
+        "difficulty_level": 1
+      },
+      "gentle_curve": {
+        "coverage_efficiency_pct": 85,
+        "wrinkle_risk_pct": 15,
+        "difficulty_level": 2
+      },
+      "sharp_curve": {
+        "coverage_efficiency_pct": 70,
+        "wrinkle_risk_pct": 30,
+        "difficulty_level": 3
+      },
+      "complex_3d": {
+        "coverage_efficiency_pct": 50,
+        "wrinkle_risk_pct": 50,
+        "difficulty_level": 4
+      }
+    }
+  },
+  "virtual_experience": {
+    "beginner_mode": {
+      "hammer_force_range_n": [200, 800],
+      "anneal_guidance": true,
+      "auto_thickness_protection": true,
+      "tutorial_enabled": true,
+      "haptic_feedback_enabled": false
+    },
+    "intermediate_mode": {
+      "hammer_force_range_n": [300, 1500],
+      "anneal_guidance": false,
+      "auto_thickness_protection": false,
+      "tutorial_enabled": false,
+      "haptic_feedback_enabled": true
+    },
+    "master_mode": {
+      "hammer_force_range_n": [500, 3000],
+      "anneal_guidance": false,
+      "auto_thickness_protection": false,
+      "tutorial_enabled": false,
+      "haptic_feedback_enabled": true,
+      "real_physical_engine": true
+    },
+    "haptic_parameters": {
+      "force_feedback_gain": 0.8,
+      "vibration_duration_ms": 100,
+      "impact_intensity_factor": 0.6
+    }
+  },
   "hammer": {
     "default_force": 500.0,
     "default_radius_mm": 15.0,
