@@ -936,7 +936,14 @@ class ProcessComparisonEngine:
 
             weighted_score = sum(scores[k] * weights[k] for k in weights) * 100
 
-            results[process_key.split("_")[0] if "_" in process_key else process_key] = {
+            result_key_map = {
+                "ancient_forging": "ancient",
+                "modern_vacuum_coating": "modern_vacuum",
+                "modern_electroplating": "modern_electroplating",
+            }
+            result_key = result_key_map.get(process_key, process_key)
+
+            results[result_key] = {
                 "process_name": cfg.get("name", process_key.replace("_", " ").title()),
                 "can_achieve_target": can_achieve,
                 "target_thickness_um": target_thickness_um,
@@ -1283,7 +1290,7 @@ class BuddhaGildingSimulator:
                 "material_efficiency_pct": float(material_efficiency),
                 "total_foil_used_m2": float(total_foil_used),
                 "total_covered_area_m2": float(total_coverage_area),
-                "estimated_foil_sheets": int(np.ceil(total_coverage_area / (config.foil_size_mm ** 2 / 1e6))),
+                "estimated_foil_sheets": int(np.ceil(total_coverage_area / max(config.foil_size_mm ** 2 / 1e6, 1e-12))),
                 "estimated_drying_time_hours": adhesive["drying_time_hours"],
                 "durability_years": adhesive["durability_years"],
                 "quality_score": float(quality_score),
