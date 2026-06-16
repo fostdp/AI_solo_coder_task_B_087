@@ -221,7 +221,7 @@
         "process_parameters": {
           "base_pressure_range_pa": [1e-5, 5e-3],
           "working_pressure_pa": 0.5,
-          "substrate_temp_range_c": [100, 350,
+          "substrate_temp_range_c": [100, 350],
           "bias_voltage_range_v": [-50, -300],
           "target_purity_pct": 99.99,
           "argon_flow_sccm": 30,
@@ -281,7 +281,7 @@
         "coating_quality_standards": {
           "purity_min_pct": 99.9,
           "hardness_hv_min": 60,
-          "adhesion_cross_cut": 0级,
+          "adhesion_cross_cut": "0级",
           "salt_spray_hours": 200
         }
       }

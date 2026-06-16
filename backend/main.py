@@ -43,20 +43,29 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from physics.physics_model import (
     HammerParameters,
+)
+from physics.alloy_analyzer import (
     AlloyComposition,
+    get_alloy_composition,
+    compare_alloys,
+)
+from physics.process_comparator import (
     ProcessComparisonEngine,
     ProcessComparisonResult,
+)
+from physics.gilding_simulator import (
     BuddhaGildingSimulator,
     BuddhaGildingConfig,
+)
+from physics.vr_gold_beater import (
     VirtualForgingExperience,
     VirtualExperienceConfig,
     StrikeFeedback,
-    get_alloy_composition,
-    compare_alloys,
 )
 from modules.common import RedisBus, REDIS_CHANNELS, load_material_config, load_rl_config
 from modules.dtu_receiver import DtuReceiver
 from modules.plasticity_simulator import PlasticitySimulator
+from modules.simulation_worker import SimulationWorkerManager, SimulationWorkerProcess
 from modules.rl_optimizer_module import RlOptimizerModule
 from modules.alarm_ws import AlarmWsService
 
@@ -148,6 +157,16 @@ class GoldFoilSystem:
 
         self.dtu_receiver = DtuReceiver(self.redis_bus)
         self.plasticity = PlasticitySimulator(self.redis_bus)
+        
+        self.simulation_worker = SimulationWorkerManager().worker
+        self.simulation_worker_enabled = os.getenv("ENABLE_SIMULATION_WORKER", "false").lower() == "true"
+        if self.simulation_worker_enabled:
+            try:
+                self.simulation_worker.start()
+                print("[System] 独立塑性仿真Worker进程已启动")
+            except Exception as e:
+                print(f"[System] Worker进程启动失败: {e}")
+                self.simulation_worker_enabled = False
         self.rl_optimizer = RlOptimizerModule(
             self.redis_bus,
             physics_model=self.plasticity.physics,
@@ -400,6 +419,11 @@ class GoldFoilSystem:
             state["auto_sim_running"] = self.auto_sim_running
             state["recent_alerts"] = self.alarm_ws.get_alert_history(20)
             state["rl_stats"] = self.rl_optimizer.get_policy_stats()
+            state["simulation_worker"] = {
+                "enabled": self.simulation_worker_enabled,
+                "alive": self.simulation_worker.is_alive() if self.simulation_worker else False,
+                "pid": self.simulation_worker._process.pid if (self.simulation_worker and self.simulation_worker._process) else None,
+            }
             return state
 
     def get_thickness_viz(self) -> dict:
@@ -779,7 +803,111 @@ async def health_check():
         "influxdb": "connected" if system.influxdb_available else "disconnected",
         "redis": "connected" if system.redis_bus.available else "memory_mode",
         "active_ws_connections": system.alarm_ws.connection_count(),
+        "simulation_worker": {
+            "enabled": system.simulation_worker_enabled,
+            "alive": system.simulation_worker.is_alive() if system.simulation_worker else False,
+        },
     }
+
+
+@app.post("/api/worker/start")
+async def start_simulation_worker():
+    """启动独立塑性仿真Worker进程"""
+    if system.simulation_worker.is_alive():
+        return {"status": "already_running", "pid": system.simulation_worker._process.pid}
+    
+    try:
+        system.simulation_worker.start()
+        system.simulation_worker_enabled = True
+        return {
+            "status": "started",
+            "pid": system.simulation_worker._process.pid,
+            "message": "独立塑性仿真Worker进程已启动",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"启动失败: {str(e)}")
+
+
+@app.post("/api/worker/stop")
+async def stop_simulation_worker():
+    """停止独立塑性仿真Worker进程"""
+    if not system.simulation_worker.is_alive():
+        return {"status": "not_running"}
+    
+    try:
+        system.simulation_worker.stop()
+        return {"status": "stopped", "message": "独立塑性仿真Worker进程已停止"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"停止失败: {str(e)}")
+
+
+@app.post("/api/worker/restart")
+async def restart_simulation_worker():
+    """重启独立塑性仿真Worker进程"""
+    try:
+        system.simulation_worker.restart()
+        system.simulation_worker_enabled = True
+        return {
+            "status": "restarted",
+            "pid": system.simulation_worker._process.pid,
+            "message": "独立塑性仿真Worker进程已重启",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"重启失败: {str(e)}")
+
+
+@app.get("/api/worker/status")
+async def get_worker_status():
+    """获取独立Worker进程状态"""
+    return {
+        "enabled": system.simulation_worker_enabled,
+        "alive": system.simulation_worker.is_alive(),
+        "pid": system.simulation_worker._process.pid if (system.simulation_worker._process and system.simulation_worker.is_alive()) else None,
+    }
+
+
+@app.post("/api/worker/strike")
+async def worker_strike(
+    force: float = Body(500.0, description="锤击力度 (N)", ge=100, le=5000),
+    position_x: float = Body(0.0, description="X坐标 (mm)"),
+    position_y: float = Body(0.0, description="Y坐标 (mm)"),
+    radius_mm: float = Body(15.0, description="锤击半径 (mm)", gt=0),
+):
+    """通过独立Worker进程执行锤击（异步）"""
+    if not system.simulation_worker_enabled or not system.simulation_worker.is_alive():
+        raise HTTPException(status_code=400, detail="独立Worker进程未运行，请先调用 /api/worker/start")
+    
+    try:
+        request_id = system.simulation_worker.send_command(
+            "strike",
+            {
+                "force": force,
+                "position": [position_x, position_y],
+                "radius_mm": radius_mm,
+            },
+        )
+        return {
+            "status": "submitted",
+            "request_id": request_id,
+            "message": "锤击请求已提交到独立Worker进程",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/worker/state")
+async def get_worker_state():
+    """通过独立Worker进程获取状态（同步）"""
+    if not system.simulation_worker_enabled or not system.simulation_worker.is_alive():
+        raise HTTPException(status_code=400, detail="独立Worker进程未运行")
+    
+    try:
+        result = system.simulation_worker.execute_sync("get_state", timeout=2.0)
+        return result
+    except TimeoutError as e:
+        raise HTTPException(status_code=408, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/state")
@@ -1216,7 +1344,7 @@ async def read_root():
         "version": "3.0.0",
         "architecture": "modular + redis pub/sub",
         "docs": "/docs",
-        "modules": ["dtu_receiver", "plasticity_simulator", "rl_optimizer", "alarm_ws"],
+        "modules": ["dtu_receiver", "plasticity_simulator", "simulation_worker", "rl_optimizer", "alarm_ws", "alloy_analyzer", "process_comparator", "gilding_simulator", "vr_gold_beater"],
     }
 
 
